@@ -239,29 +239,21 @@ BEGIN
     INC(i)
   END;
   Platform.GetClock(h.time, h.date);
-  h.check := h.check + h.length + (h.time MOD xx) + (h.date MOD xx) + ENTIER(h.ratio);
+  h.check := h.check + h.length + (h.time MOD xx) + (h.date MOD xx) + ENTIER(h.ratio) + h.extensions;
   Files.WriteBytes(R, h.name, 32);
-  Files.WriteLInt(R, h.length);
+  IF h.extensions # 0 THEN
+    Files.WriteLInt(R, -h.length);
+  ELSE
+    Files.WriteLInt(R, h.length);
+  END;
   Files.WriteLInt(R, h.check);
   Files.WriteLInt(R, h.date);
   Files.WriteLInt(R, h.time);
-  Files.WriteReal(R, h.ratio)
+  Files.WriteReal(R, h.ratio);
+  IF h.extensions # 0 THEN
+    Files.WriteLInt(R, h.extensions);
+  END;
 END WriteHeader;
-
-PROCEDURE CreateArchiveHeader(VAR R: Files.Rider);
-VAR
-  h: Header;  (* Add local header variable *)
-BEGIN
-  (* Initialize with empty header *)
-  h.name := "OberonArchive";
-  h.length := 0;
-  h.check := 0;
-  h.date := 0;
-  h.time := 0;
-  h.ratio := 0.0;
-  h.extensions := 0;
-  WriteHeader(R, h);
-END CreateArchiveHeader;
 
 PROCEDURE InputBit(VAR R: Files.Rider): LONGINT;
 VAR h: LONGINT;
@@ -276,7 +268,7 @@ BEGIN
     CurByte := ORD(Buffer[BufferPtr]);
     INC(BufferPtr)
   END;
-  h := SYSTEM.LSH(CurByte, -CurBitNr) MOD 2;
+  h := ASH(CurByte, -CurBitNr) MOD 2;
   DEC(CurBitNr);
   IF CurBitNr < 0 THEN CurBitNr := 7 END;
   RETURN h
@@ -298,8 +290,8 @@ BEGIN
       CurByte := ORD(Buffer[BufferPtr]);
       INC(BufferPtr)
     END;
-    IF SYSTEM.LSH(CurByte, -CurBitNr) MOD 2 = 1 THEN
-      h := h + SYSTEM.LSH(1, i)
+    IF ASH(CurByte, -CurBitNr) MOD 2 = 1 THEN
+      h := h + ASH(1, i)
     END;
     DEC(CurBitNr);
     IF CurBitNr < 0 THEN CurBitNr := 7 END;
@@ -311,7 +303,7 @@ END InputBits;
 PROCEDURE OutputBit(VAR R: Files.Rider; bit: LONGINT);
 BEGIN
   IF bit = 1 THEN
-    CurByte := CurByte + SYSTEM.LSH(1, CurBitNr)
+    CurByte := CurByte + ASH(1, CurBitNr)
   END;
   DEC(CurBitNr);
   IF CurBitNr < 0 THEN
@@ -333,8 +325,8 @@ BEGIN
   h := bits;
   i := count-1;
   WHILE i >= 0 DO
-    IF SYSTEM.LSH(h, -i) MOD 2 = 1 THEN
-      CurByte := CurByte + SYSTEM.LSH(1, CurBitNr)
+    IF ASH(h, -i) MOD 2 = 1 THEN
+      CurByte := CurByte + ASH(1, CurBitNr)
     END;
     DEC(CurBitNr);
     IF CurBitNr < 0 THEN
@@ -351,6 +343,20 @@ BEGIN
     DEC(i)
   END
 END OutputBits;
+
+(* Add FlushBits procedure *)
+PROCEDURE FlushBits(VAR R: Files.Rider);
+BEGIN
+  IF CurBitNr # 7 THEN
+    Buffer[BufferPtr] := CHR(CurByte);
+    INC(BufferPtr)
+  END;
+  IF BufferPtr > 0 THEN
+    Files.WriteBytes(R, Buffer, BufferPtr);
+    INC(Len, BufferPtr);
+    BufferPtr := 0
+  END
+END FlushBits;
 
 PROCEDURE Compress(VAR Input, Output: Files.Rider; maxbytes: LONGINT);
 VAR
@@ -376,12 +382,6 @@ BEGIN
   lookAheadBytes := i;
 
   (* Initialize tree with first position *)
-  (*
-  Tree[TreeRoot].largerChild := currentPosition;
-  Tree[currentPosition].parent := TreeRoot;
-  Tree[currentPosition].largerChild := Unused;
-  Tree[currentPosition].smallerChild := Unused;
-  *)
   InitTree(currentPosition);
 
   matchLength := 0;
@@ -420,7 +420,8 @@ BEGIN
     END
   END;
   OutputBit(Output, 0);
-  OutputBits(Output, EndOfStream, IndexBitCount)
+  OutputBits(Output, EndOfStream, IndexBitCount);
+  FlushBits(Output); (* Add this line *)
 END Compress;
 
 PROCEDURE Expand(VAR Input, Output: Files.Rider);
@@ -534,11 +535,18 @@ BEGIN
       COPY(nl.name, h.name);
       h.length := len;
       h.ratio := 0.0; (* Will be updated later *)
+      h.extensions := 0;
       WriteHeader(Ra, h);
+
+      (* Initialize compression state *)
+      Len := 0;
+      BufferPtr := 0;
+      CurBitNr := 7;
+      CurByte := 0;
 
       (* Compress and add file content *)
       Compress(RF, Ra, len);
-      compressedLength := Files.Pos(Ra) - startPos - 56; (* Header size is 56 bytes *)
+      compressedLength := Len;
 
       (* Calculate compression ratio *)
       IF len > 0 THEN
@@ -569,6 +577,7 @@ BEGIN
   h.name := EOFName;
   h.length := 0;
   h.ratio := 0.0;
+  h.extensions := 0;
   WriteHeader(Ra, h);
 
   Files.Register(ArcF);
@@ -606,6 +615,14 @@ BEGIN
           Out.String("Failed to create: "); Out.String(nl.name); Out.Ln;
         ELSE
           Files.Set(RF, AddF, 0);
+          
+          (* Initialize expansion state *)
+          Len := 0;
+          BufferPtr := BufferSize;
+          CurBitNr := 7;
+          CurByte := 0;
+          maxLen := h.length;
+          
           Expand(Ra, RF);
           Files.Register(AddF);
           Files.Close(AddF);
@@ -648,6 +665,14 @@ BEGIN
       Out.String("Failed to create: "); Out.String(h.name); Out.Ln;
     ELSE
       Files.Set(RF, AddF, 0);
+      
+      (* Initialize expansion state *)
+      Len := 0;
+      BufferPtr := BufferSize;
+      CurBitNr := 7;
+      CurByte := 0;
+      maxLen := h.length;
+      
       Expand(Ra, RF);
       Files.Register(AddF);
       Files.Close(AddF);
@@ -661,7 +686,6 @@ BEGIN
   Files.Register(ArcF);
   Files.Close(ArcF);
 END ExtractAll;
-
 
 PROCEDURE Delete*(archive: ARRAY OF CHAR; files: FileUtil.FileList);
 VAR
@@ -692,7 +716,7 @@ BEGIN
 
       IF ~found THEN
         WriteHeader(Rt, h);
-        Files.Set(Ra, ArcF, pos);
+        pos := Files.Pos(Ra);
         CopyFrom(Ra, Rt, h.length);
       END;
 
