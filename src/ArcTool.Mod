@@ -494,31 +494,44 @@ END Directory;
 
 PROCEDURE Add*(archive: ARRAY OF CHAR; files: FileUtil.FileList);
 VAR
-  ArcF, AddF: Files.File;
-  Ra, RF: Files.Rider;
+  ArcF, AddF, TmpF: Files.File;
+  Ra, RF, Rt: Files.Rider;
   h: Header;
   nl: FileUtil.FileList;
   len, startPos, compressedLength: LONGINT;
   archiveExists: BOOLEAN;
   percent: REAL;
+  err: BOOLEAN;
+  pos: LONGINT;
 BEGIN
   (* Check if archive exists *)
   ArcF := Files.Old(archive);
   archiveExists := (ArcF # NIL);
 
-  IF ~archiveExists THEN
-    (* Create new archive *)
-    ArcF := Files.New(archive);
-    IF ArcF = NIL THEN
-      Out.String("Failed to create archive: "); Out.String(archive); Out.Ln;
-      RETURN;
-    END;
+  IF archiveExists THEN
+    (* Copy existing archive to temp file, excluding EOF marker *)
+    TmpF := Files.New(Temp);
     Files.Set(Ra, ArcF, 0);
+    Files.Set(Rt, TmpF, 0);
+    
+    ReadHeader(Ra, h, err);
+    WHILE (h.name # EOFName) & ~err DO
+      pos := Files.Pos(Ra);
+      WriteHeader(Rt, h);
+      Files.Set(Ra, ArcF, pos);
+      CopyFrom(Ra, Rt, h.length);
+      ReadHeader(Ra, h, err);
+    END;
+    
+    Files.Close(ArcF);
+    Ra := Rt; (* Use temp file as base *)
   ELSE
-    (* Open existing archive *)
-    Files.Set(Ra, ArcF, Files.Length(ArcF));
+    (* Create new archive *)
+    TmpF := Files.New(Temp);
+    Files.Set(Ra, TmpF, 0);
   END;
 
+  (* Add new files *)
   nl := files;
   WHILE nl # NIL DO
     AddF := Files.Old(nl.name);
@@ -556,9 +569,10 @@ BEGIN
       END;
 
       (* Update header with actual ratio *)
-      Files.Set(Ra, ArcF, startPos);
+      pos := Files.Pos(Ra);
+      Files.Set(Ra, TmpF, startPos);
       WriteHeader(Ra, h);
-      Files.Set(Ra, ArcF, Files.Pos(Ra) + compressedLength);
+      Files.Set(Ra, TmpF, pos);
 
       Files.Register(AddF);
       Files.Close(AddF);
@@ -580,8 +594,19 @@ BEGIN
   h.extensions := 0;
   WriteHeader(Ra, h);
 
-  Files.Register(ArcF);
-  Files.Close(ArcF);
+  Files.Register(TmpF);
+  Files.Close(TmpF);
+  
+  (* Replace original archive *)
+  IF archiveExists THEN
+    IF ~FileUtil.DeleteFile(archive) THEN
+      Out.String("Warning: could not delete original archive"); Out.Ln;
+    END;
+  END;
+  
+  IF ~FileUtil.RenameFile(Temp, archive) THEN
+    Out.String("Error: could not rename temp file to archive"); Out.Ln;
+  END;
 END Add;
 
 PROCEDURE Extract*(archive: ARRAY OF CHAR; files: FileUtil.FileList);
@@ -592,6 +617,7 @@ VAR
   err: BOOLEAN;
   nl: FileUtil.FileList;
   found: BOOLEAN;
+  pos: LONGINT;
 BEGIN
   ArcF := Files.Old(archive);
   IF ArcF = NIL THEN
@@ -603,6 +629,7 @@ BEGIN
   ReadHeader(Ra, h, err);
 
   WHILE (h.name # EOFName) & ~err DO
+    pos := Files.Pos(Ra); (* Remember position after header *)
     nl := files;
     found := FALSE;
 
@@ -632,11 +659,8 @@ BEGIN
       nl := nl.next;
     END;
 
-    (* Skip file if not extracted *)
-    IF ~found THEN
-      Files.Set(Ra, ArcF, Files.Pos(Ra) + h.length);
-    END;
-
+    (* Move to next entry *)
+    Files.Set(Ra, ArcF, pos + h.length);
     ReadHeader(Ra, h, err);
   END;
   Files.Register(ArcF);
@@ -649,6 +673,7 @@ VAR
   Ra, RF: Files.Rider;
   h: Header;
   err: BOOLEAN;
+  pos: LONGINT;
 BEGIN
   ArcF := Files.Old(archive);
   IF ArcF = NIL THEN
@@ -660,6 +685,7 @@ BEGIN
   ReadHeader(Ra, h, err);
 
   WHILE (h.name # EOFName) & ~err DO
+    pos := Files.Pos(Ra); (* Remember position after header *)
     AddF := Files.New(h.name);
     IF AddF = NIL THEN
       Out.String("Failed to create: "); Out.String(h.name); Out.Ln;
@@ -679,7 +705,8 @@ BEGIN
       Out.String("Extracted: "); Out.String(h.name); Out.Ln;
     END;
 
-    Files.Set(Ra, ArcF, Files.Pos(Ra) + h.length);
+    (* Move to next entry *)
+    Files.Set(Ra, ArcF, pos + h.length);
     ReadHeader(Ra, h, err);
   END;
 
