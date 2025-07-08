@@ -88,7 +88,7 @@ BEGIN
   (* Check for document header (magic bytes) *)
   IF (ORD(h.name[0]) = 0F7H) & (ORD(h.name[1]) = 07H) THEN
     (* Skip 32-byte document header *)
-    Files.Set(R, Files.Base(R), pos+32);
+    Files.Set(R, Files.Base(R), pos+26);
     ReadHeader(R, h, err);
     RETURN
   END;
@@ -116,7 +116,7 @@ BEGIN
       chk := chk + ORD(h.name[pos]);
       INC(pos)
     END;
-    chk := chk + h.length + ENTIER(h.ratio) + (h.time MOD xx) + (h.date MOD xx);
+    chk := chk + h.length + ENTIER(h.ratio) + (h.time MOD xx) + (h.date MOD xx) + h.extensions;
     err := chk # h.check
   ELSE
     err := TRUE
