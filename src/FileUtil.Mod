@@ -48,6 +48,7 @@ BEGIN
   IF f # NIL THEN
     Files.Set(r, f, 0);
     size := Files.Length(f);
+    Files.Register(f);
     Files.Close(f);
     RETURN size;
   END;

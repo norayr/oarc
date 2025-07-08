@@ -15,6 +15,8 @@ CONST
   Temp = "/tmp/Compress.Temp";
   err1 = "Error in archive";
   err2 = " not found";
+  err3 = " failed to create file";
+  err4 = " failed to open archive";
   xx = 32768;
   EOFName = "~ ";
   Done = 0;
@@ -46,6 +48,110 @@ VAR
   CurByte: LONGINT;
   BufferPtr: LONGINT;
   Err: BOOLEAN;
+  help: INTEGER;
+
+PROCEDURE InitTree(r: INTEGER);
+BEGIN
+  Tree[TreeRoot].largerChild := r;
+  Tree[r].parent := TreeRoot;
+  Tree[r].largerChild := Unused;
+  Tree[r].smallerChild := Unused;
+END InitTree;
+
+PROCEDURE ContractNode(oldNode, newNode: INTEGER);
+VAR parent: INTEGER;
+BEGIN
+  parent := Tree[oldNode].parent;
+  Tree[newNode].parent := parent;
+  IF Tree[parent].largerChild = oldNode THEN
+    Tree[parent].largerChild := newNode
+  ELSE
+    Tree[parent].smallerChild := newNode
+  END;
+  Tree[oldNode].parent := Unused;
+END ContractNode;
+
+PROCEDURE ReplaceNode(oldNode, newNode: INTEGER);
+VAR parent: INTEGER;
+BEGIN
+  parent := Tree[oldNode].parent;
+  IF Tree[parent].smallerChild = oldNode THEN
+    Tree[parent].smallerChild := newNode
+  ELSE
+    Tree[parent].largerChild := newNode
+  END;
+  Tree[newNode] := Tree[oldNode];
+  Tree[Tree[newNode].smallerChild].parent := newNode;
+  Tree[Tree[newNode].largerChild].parent := newNode;
+  Tree[oldNode].parent := Unused;
+END ReplaceNode;
+
+PROCEDURE FindNextNode(node: INTEGER): INTEGER;
+VAR next: INTEGER;
+BEGIN
+  next := Tree[node].smallerChild;
+  WHILE Tree[next].largerChild # Unused DO
+    next := Tree[next].largerChild;
+  END;
+  RETURN next;
+END FindNextNode;
+
+PROCEDURE DeleteString(p: INTEGER);
+VAR replacement: INTEGER;
+BEGIN
+  IF Tree[p].parent = Unused THEN RETURN; END;
+  IF Tree[p].largerChild = Unused THEN
+    ContractNode(p, Tree[p].smallerChild)
+  ELSIF Tree[p].smallerChild = Unused THEN
+    ContractNode(p, Tree[p].largerChild)
+  ELSE
+    replacement := FindNextNode(p);
+    DeleteString(replacement);
+    ReplaceNode(p, replacement);
+  END;
+END DeleteString;
+
+PROCEDURE AddString(newNode: INTEGER; VAR matchPosition: INTEGER): INTEGER;
+VAR i, testNode, delta, matchLength, child: INTEGER;
+BEGIN
+  IF newNode = EndOfStream THEN RETURN 0; END;
+  testNode := Tree[TreeRoot].largerChild;
+  matchLength := 0;
+  LOOP
+    i := 0;
+    delta := 0;
+    WHILE (i < LookAheadSize) & (delta = 0) DO
+      delta := ORD(Window[newNode + i]) - ORD(Window[testNode + i]);
+      INC(i);
+    END;
+    IF delta # 0 THEN DEC(i); END;
+    IF i > matchLength THEN
+      matchLength := i;
+      matchPosition := testNode;
+      IF matchLength >= LookAheadSize THEN
+        ReplaceNode(testNode, newNode);
+        RETURN matchLength;
+      END;
+    END;
+    IF delta >= 0 THEN
+      child := Tree[testNode].largerChild
+    ELSE
+      child := Tree[testNode].smallerChild
+    END;
+    IF child = Unused THEN
+      IF delta >= 0 THEN
+        Tree[testNode].largerChild := newNode
+      ELSE
+        Tree[testNode].smallerChild := newNode
+      END;
+      Tree[newNode].parent := testNode;
+      Tree[newNode].largerChild := Unused;
+      Tree[newNode].smallerChild := Unused;
+      RETURN matchLength;
+    END;
+    testNode := child;
+  END;
+END AddString;
 
 PROCEDURE Init();
 VAR i: LONGINT;
@@ -142,6 +248,21 @@ BEGIN
   Files.WriteReal(R, h.ratio)
 END WriteHeader;
 
+PROCEDURE CreateArchiveHeader(VAR R: Files.Rider);
+VAR
+  h: Header;  (* Add local header variable *)
+BEGIN
+  (* Initialize with empty header *)
+  h.name := "OberonArchive";
+  h.length := 0;
+  h.check := 0;
+  h.date := 0;
+  h.time := 0;
+  h.ratio := 0.0;
+  h.extensions := 0;
+  WriteHeader(R, h);
+END CreateArchiveHeader;
+
 PROCEDURE InputBit(VAR R: Files.Rider): LONGINT;
 VAR h: LONGINT;
 BEGIN
@@ -232,8 +353,10 @@ BEGIN
 END OutputBits;
 
 PROCEDURE Compress(VAR Input, Output: Files.Rider; maxbytes: LONGINT);
-VAR i, lookAheadBytes, currentPosition, replaceCount, matchLength, matchPosition: INTEGER;
-    ch: CHAR; bytesread: LONGINT;
+VAR
+  i, lookAheadBytes, currentPosition, replaceCount, matchLength, matchPosition: INTEGER;
+  ch: CHAR;
+  bytesread: LONGINT;
 BEGIN
   Init();
   bytesread := 0;
@@ -243,11 +366,61 @@ BEGIN
     Files.Read(Input, ch);
     INC(bytesread);
     Window[currentPosition+i] := ch;
+    (* Maintain mirror for lookahead buffer *)
+    IF currentPosition+i < RawLookAheadSize+1 THEN
+      Window[currentPosition+i+WindowSize-1] := ch;
+    END;
     INC(i)
   END;
   IF Input.eof OR (bytesread >= maxbytes) THEN DEC(i) END;
   lookAheadBytes := i;
-  (* Rest of compression algorithm *)
+
+  (* Initialize tree with first position *)
+  (*
+  Tree[TreeRoot].largerChild := currentPosition;
+  Tree[currentPosition].parent := TreeRoot;
+  Tree[currentPosition].largerChild := Unused;
+  Tree[currentPosition].smallerChild := Unused;
+  *)
+  InitTree(currentPosition);
+
+  matchLength := 0;
+  matchPosition := 0;
+  WHILE lookAheadBytes > 0 DO
+    IF matchLength > lookAheadBytes THEN
+      matchLength := lookAheadBytes
+    END;
+    IF matchLength <= BreakEven THEN
+      replaceCount := 1;
+      OutputBit(Output, 1);
+      OutputBits(Output, ORD(Window[currentPosition]), 8)
+    ELSE
+      OutputBit(Output, 0);
+      OutputBits(Output, matchPosition, IndexBitCount);
+      OutputBits(Output, matchLength-(BreakEven+1), LengthBitCount);
+      replaceCount := matchLength
+    END;
+    i := 0;
+    WHILE i < replaceCount DO
+      DeleteString((currentPosition+LookAheadSize) MOD (WindowSize-1));
+      IF ~Input.eof & (bytesread < maxbytes) THEN
+        Files.Read(Input, ch);
+        INC(bytesread);
+        Window[currentPosition+LookAheadSize] := ch;
+        Window[(currentPosition+LookAheadSize) MOD (WindowSize-1)] := ch;
+      ELSE
+        DEC(lookAheadBytes)
+      END;
+      currentPosition := (currentPosition+1) MOD (WindowSize-1);
+      IF currentPosition = 0 THEN currentPosition := WindowSize-1 END;
+      IF lookAheadBytes # 0 THEN
+        matchLength := AddString(currentPosition, matchPosition)
+      END;
+      INC(i)
+    END
+  END;
+  OutputBit(Output, 0);
+  OutputBits(Output, EndOfStream, IndexBitCount)
 END Compress;
 
 PROCEDURE Expand(VAR Input, Output: Files.Rider);
@@ -264,19 +437,28 @@ BEGIN
       ch := CHR(InputBits(Input, 8));
       Files.Write(Output, ch);
       Window[currentPosition] := ch;
-      currentPosition := (currentPosition+1) MOD (WindowSize-1)
+      (* Maintain mirror for lookahead buffer *)
+      IF currentPosition < RawLookAheadSize+1 THEN
+        Window[currentPosition+WindowSize-1] := ch;
+      END;
+      currentPosition := (currentPosition+1) MOD (WindowSize-1);
+      IF currentPosition = 0 THEN currentPosition := WindowSize-1 END;
     ELSE
-      (* Cast LONGINT to INTEGER for window indices *)
       matchPosition := SHORT(InputBits(Input, IndexBitCount));
       IF matchPosition = EndOfStream THEN EXIT END;
       matchLength := SHORT(InputBits(Input, LengthBitCount));
       INC(matchLength, BreakEven);
       i := 0;
       WHILE i <= matchLength DO
-        ch := Window[matchPosition+i];
+        ch := Window[(matchPosition+i) MOD (WindowSize-1)];
         Files.Write(Output, ch);
         Window[currentPosition] := ch;
+        (* Maintain mirror for lookahead buffer *)
+        IF currentPosition < RawLookAheadSize+1 THEN
+          Window[currentPosition+WindowSize-1] := ch;
+        END;
         currentPosition := (currentPosition+1) MOD (WindowSize-1);
+        IF currentPosition = 0 THEN currentPosition := WindowSize-1 END;
         INC(i)
       END
     END;
@@ -301,6 +483,7 @@ BEGIN
       Files.Set(R, ArcF, Files.Pos(R) + h.length);
       ReadHeader(R, h, err)
     END;
+    Files.Register(ArcF);
     Files.Close(ArcF);
     IF err THEN Out.String(err1); Out.Ln END;
   ELSE
@@ -309,84 +492,176 @@ BEGIN
 END Directory;
 
 PROCEDURE Add*(archive: ARRAY OF CHAR; files: FileUtil.FileList);
-VAR ArcF, AddF: Files.File; Ra, RF: Files.Rider; h: Header;
-    pos: LONGINT; nl: FileUtil.FileList; err: BOOLEAN;
-    success: BOOLEAN;
+VAR
+  ArcF, AddF: Files.File;
+  Ra, RF: Files.Rider;
+  h: Header;
+  nl: FileUtil.FileList;
+  len, startPos, compressedLength: LONGINT;
+  archiveExists: BOOLEAN;
+  percent: REAL;
 BEGIN
+  (* Check if archive exists *)
   ArcF := Files.Old(archive);
-  IF ArcF = NIL THEN
+  archiveExists := (ArcF # NIL);
+
+  IF ~archiveExists THEN
+    (* Create new archive *)
     ArcF := Files.New(archive);
+    IF ArcF = NIL THEN
+      Out.String("Failed to create archive: "); Out.String(archive); Out.Ln;
+      RETURN;
+    END;
     Files.Set(Ra, ArcF, 0);
-    (* Write archive header *)
+  ELSE
+    (* Open existing archive *)
+    Files.Set(Ra, ArcF, Files.Length(ArcF));
   END;
 
   nl := files;
   WHILE nl # NIL DO
     AddF := Files.Old(nl.name);
-    IF AddF # NIL THEN
-      Files.Set(RF, AddF, 0);
-      COPY(nl.name, h.name);
-      WriteHeader(Ra, h);
-      (* Compress and add file *)
-      Files.Close(AddF);
-    ELSE
+    IF AddF = NIL THEN
       Out.String(nl.name); Out.String(err2); Out.Ln;
+    ELSE
+      Files.Set(RF, AddF, 0);
+      len := Files.Length(AddF);
+
+      (* Remember start position for header update *)
+      startPos := Files.Pos(Ra);
+
+      (* Write initial header *)
+      COPY(nl.name, h.name);
+      h.length := len;
+      h.ratio := 0.0; (* Will be updated later *)
+      WriteHeader(Ra, h);
+
+      (* Compress and add file content *)
+      Compress(RF, Ra, len);
+      compressedLength := Files.Pos(Ra) - startPos - 56; (* Header size is 56 bytes *)
+
+      (* Calculate compression ratio *)
+      IF len > 0 THEN
+        h.ratio := 100.0 * compressedLength / len;
+      ELSE
+        h.ratio := 0.0;
+      END;
+
+      (* Update header with actual ratio *)
+      Files.Set(Ra, ArcF, startPos);
+      WriteHeader(Ra, h);
+      Files.Set(Ra, ArcF, Files.Pos(Ra) + compressedLength);
+
+      Files.Register(AddF);
+      Files.Close(AddF);
+      Out.String("Added: "); Out.String(nl.name);
+      Out.String(" ("); Out.Int(compressedLength, 0); Out.String(" bytes, ");
+
+      (* Output ratio using available Out.Real *)
+      percent := h.ratio;
+      Out.Real(percent, 2); (* 2 decimal places *)
+      Out.String("% ratio)"); Out.Ln;
     END;
     nl := nl.next;
   END;
+
+  (* Write end-of-archive marker *)
+  h.name := EOFName;
+  h.length := 0;
+  h.ratio := 0.0;
+  WriteHeader(Ra, h);
+
+  Files.Register(ArcF);
   Files.Close(ArcF);
 END Add;
 
 PROCEDURE Extract*(archive: ARRAY OF CHAR; files: FileUtil.FileList);
-VAR ArcF, AddF: Files.File; Ra, RF: Files.Rider;
-    h: Header; pos: LONGINT; found: BOOLEAN; nl: FileUtil.FileList;
-    err: BOOLEAN;
+VAR
+  ArcF, AddF: Files.File;
+  Ra, RF: Files.Rider;
+  h: Header;
+  err: BOOLEAN;
+  nl: FileUtil.FileList;
+  found: BOOLEAN;
 BEGIN
   ArcF := Files.Old(archive);
-  IF ArcF # NIL THEN
-    Files.Set(Ra, ArcF, 0);
-    ReadHeader(Ra, h, err);
+  IF ArcF = NIL THEN
+    Out.String(archive); Out.String(err4); Out.Ln;
+    RETURN;
+  END;
+
+  Files.Set(Ra, ArcF, 0);
+  ReadHeader(Ra, h, err);
+
+  WHILE (h.name # EOFName) & ~err DO
     nl := files;
-    WHILE (h.name # EOFName) & ~err & (nl # NIL) DO
+    found := FALSE;
+
+    (* Check all requested files *)
+    WHILE (nl # NIL) & ~found DO
       IF h.name = nl.name THEN
-        AddF := Files.New(nl.name);
-        Files.Set(RF, AddF, 0);
-        Expand(Ra, RF);
-        Files.Close(AddF);
         found := TRUE;
+        AddF := Files.New(nl.name);
+        IF AddF = NIL THEN
+          Out.String("Failed to create: "); Out.String(nl.name); Out.Ln;
+        ELSE
+          Files.Set(RF, AddF, 0);
+          Expand(Ra, RF);
+          Files.Register(AddF);
+          Files.Close(AddF);
+          Out.String("Extracted: "); Out.String(nl.name); Out.Ln;
+        END;
       END;
-      Files.Set(Ra, ArcF, Files.Pos(Ra) + h.length);
-      ReadHeader(Ra, h, err);
       nl := nl.next;
     END;
-    Files.Close(ArcF);
-    IF ~found THEN Out.String(nl.name); Out.String(err2); Out.Ln END;
-  ELSE
-    Out.String(archive); Out.String(err2); Out.Ln;
+
+    (* Skip file if not extracted *)
+    IF ~found THEN
+      Files.Set(Ra, ArcF, Files.Pos(Ra) + h.length);
+    END;
+
+    ReadHeader(Ra, h, err);
   END;
+  Files.Register(ArcF);
+  Files.Close(ArcF);
 END Extract;
 
 PROCEDURE ExtractAll*(archive: ARRAY OF CHAR);
-VAR ArcF, AddF: Files.File; Ra, RF: Files.Rider; h: Header; err: BOOLEAN;
+VAR
+  ArcF, AddF: Files.File;
+  Ra, RF: Files.Rider;
+  h: Header;
+  err: BOOLEAN;
 BEGIN
   ArcF := Files.Old(archive);
-  IF ArcF # NIL THEN
-    Files.Set(Ra, ArcF, 0);
-    ReadHeader(Ra, h, err);
-    WHILE (h.name # EOFName) & ~err DO
-      AddF := Files.New(h.name);
+  IF ArcF = NIL THEN
+    Out.String(archive); Out.String(err4); Out.Ln;
+    RETURN;
+  END;
+
+  Files.Set(Ra, ArcF, 0);
+  ReadHeader(Ra, h, err);
+
+  WHILE (h.name # EOFName) & ~err DO
+    AddF := Files.New(h.name);
+    IF AddF = NIL THEN
+      Out.String("Failed to create: "); Out.String(h.name); Out.Ln;
+    ELSE
       Files.Set(RF, AddF, 0);
       Expand(Ra, RF);
+      Files.Register(AddF);
       Files.Close(AddF);
-      Files.Set(Ra, ArcF, Files.Pos(Ra) + h.length);
-      ReadHeader(Ra, h, err)
+      Out.String("Extracted: "); Out.String(h.name); Out.Ln;
     END;
-    Files.Close(ArcF);
-    IF err THEN Out.String(err1); Out.Ln END;
-  ELSE
-    Out.String(archive); Out.String(err2); Out.Ln;
+
+    Files.Set(Ra, ArcF, Files.Pos(Ra) + h.length);
+    ReadHeader(Ra, h, err);
   END;
+
+  Files.Register(ArcF);
+  Files.Close(ArcF);
 END ExtractAll;
+
 
 PROCEDURE Delete*(archive: ARRAY OF CHAR; files: FileUtil.FileList);
 VAR
@@ -427,7 +702,9 @@ BEGIN
     END;
 
     (* Finalize temp archive and replace original *)
+    Files.Register(ArcF);
     Files.Close(ArcF);
+    Files.Register(TmpF);
     Files.Close(TmpF);
     success := FileUtil.DeleteFile(archive);
     success := FileUtil.RenameFile(Temp, archive);
