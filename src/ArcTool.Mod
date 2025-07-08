@@ -33,7 +33,8 @@ TYPE
     name: Name;
     length, check: LONGINT;
     date, time: LONGINT;
-    ratio: REAL
+    ratio: REAL;
+    extensions: LONGINT
   END;
   EnumProc = PROCEDURE (h: Header; VAR stop: BOOLEAN);
 
@@ -84,6 +85,14 @@ VAR chk, pos: LONGINT; i: INTEGER;
 BEGIN
   pos := Files.Pos(R);
   Files.ReadBytes(R, h.name, 32);
+  (* Check for document header (magic bytes) *)
+  IF (ORD(h.name[0]) = 0F7H) & (ORD(h.name[1]) = 07H) THEN
+    (* Skip 32-byte document header *)
+    Files.Set(R, Files.Base(R), pos+32);
+    ReadHeader(R, h, err);
+    RETURN
+  END;
+
   IF R.eof & (R.res = 32) THEN
     h.name := EOFName;
     err := FALSE;
@@ -94,6 +103,13 @@ BEGIN
   Files.ReadLInt(R, h.date);
   Files.ReadLInt(R, h.time);
   Files.ReadReal(R, h.ratio);
+  (* Handle extensions *)
+  IF h.length < 0 THEN
+    Files.ReadLInt(R, h.extensions);
+    h.length := -h.length;
+  ELSE
+    h.extensions := 0;
+  END;
   IF (h.ratio > 0.0) & (h.ratio < 1000000.0) THEN
     pos := 0; chk := 0;
     WHILE pos < 32 DO
