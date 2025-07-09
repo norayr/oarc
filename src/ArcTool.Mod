@@ -364,28 +364,36 @@ BEGIN
     DEC(i)
   END
 END OutputBits;
+
 PROCEDURE Compress(VAR Input, Output: Files.Rider; maxbytes: LONGINT);
 VAR
   i, lookAheadBytes, currentPosition, replaceCount, matchLength, matchPosition: INTEGER;
   ch: CHAR;
   bytesread: LONGINT;
+  validRead: BOOLEAN;
 BEGIN
   Init();
   bytesread := 0;
   currentPosition := 1;
   i := 0;
-  WHILE (i < LookAheadSize) & ~Input.eof & (bytesread < maxbytes) DO
+  
+  (* Read initial lookahead buffer *)
+  WHILE (i < LookAheadSize) & (bytesread < maxbytes) DO
     Files.Read(Input, ch);
-    INC(bytesread);
-    Window[currentPosition+i] := ch;
-    (* Maintain mirror for lookahead buffer *)
-    IF currentPosition+i < RawLookAheadSize+1 THEN
-      Window[currentPosition+i+WindowSize-1] := ch;
-    END;
-    INC(i)
+    IF ~Input.eof THEN
+      (* Successful read *)
+      INC(bytesread);
+      Window[currentPosition+i] := ch;
+      IF currentPosition+i < RawLookAheadSize+1 THEN
+        Window[currentPosition+i+WindowSize-1] := ch;
+      END;
+      INC(i)
+    ELSE
+      (* EOF reached, exit loop *)
+      bytesread := maxbytes; (* Force loop exit *)
+    END
   END;
-  IF Input.eof OR (bytesread >= maxbytes) THEN DEC(i) END;
-  lookAheadBytes := i;
+  lookAheadBytes := i;  (* No DEC(i) needed! *)
 
   (* Initialize tree with first position *)
   InitTree(currentPosition);
@@ -409,16 +417,24 @@ BEGIN
     i := 0;
     WHILE i < replaceCount DO
       DeleteString((currentPosition+LookAheadSize) MOD (WindowSize-1));
-      IF ~Input.eof & (bytesread < maxbytes) THEN
+      
+      (* Try to read next byte *)
+      validRead := FALSE;
+      IF bytesread < maxbytes THEN
         Files.Read(Input, ch);
-        INC(bytesread);
-        Window[currentPosition+LookAheadSize] := ch;
-        Window[(currentPosition+LookAheadSize) MOD (WindowSize-1)] := ch;
-      ELSE
+        IF ~Input.eof THEN
+          INC(bytesread);
+          Window[currentPosition+LookAheadSize] := ch;
+          Window[(currentPosition+LookAheadSize) MOD (WindowSize-1)] := ch;
+          validRead := TRUE
+        END
+      END;
+      
+      IF ~validRead THEN
         DEC(lookAheadBytes)
       END;
+      
       currentPosition := (currentPosition+1) MOD (WindowSize-1);
-      (* Don't add the extra check for currentPosition = 0 *)
       IF lookAheadBytes # 0 THEN
         matchLength := AddString(currentPosition, matchPosition)
       END;
@@ -488,8 +504,7 @@ BEGIN
       Files.Set(R, ArcF, Files.Pos(R) + h.length);
       ReadHeader(R, h, err)
     END;
-    Files.Register(ArcF);
-    Files.Close(ArcF);
+    Files.Close(ArcF);  (* No Register needed - we didn't modify the file *)
     IF err THEN Out.String(err1); Out.Ln END;
   ELSE
     Out.String(archive); Out.String(err2); Out.Ln;
@@ -515,7 +530,7 @@ BEGIN
   changed := FALSE;
   ArcF := Files.Old(archive);
   archiveExists := (ArcF # NIL);
-  
+
   IF ~archiveExists THEN
     ArcF := Files.New(archive);
     IF ArcF = NIL THEN RETURN END;
@@ -532,26 +547,26 @@ BEGIN
       ha := FileUtil.NewFileNode(h.name);
       ha.next := addL;
       addL := ha;
-      
+
       (* Move to next entry *)
       pos := Files.Pos(Ra) + h.length;
       Files.Set(Ra, ArcF, pos);
       ReadHeader(Ra, h, err);
     END;
-    
+
     IF err THEN
       Out.String("Error reading archive"); Out.Ln;
       Files.Close(ArcF);
       RETURN;
     END;
-    
+
     (* Remember EOF position - we'll write new entries here *)
     eofPos := pos;
   END;
-  
+
   (* Position at EOF location to add new files *)
   Files.Set(Ra, ArcF, eofPos);
-  
+
   (* Add new files *)
   nl := files;
   WHILE nl # NIL DO
@@ -559,12 +574,12 @@ BEGIN
     ha := addL;
     found := FALSE;
     WHILE (ha # NIL) & ~found DO
-      found := (ha.name = nl.name); 
+      found := (ha.name = nl.name);
       ha := ha.next;
     END;
-    
+
     IF found THEN
-      Out.String("Warning: "); Out.String(nl.name); 
+      Out.String("Warning: "); Out.String(nl.name);
       Out.String(" already exists in archive"); Out.Ln;
     ELSE
       AddF := Files.Old(nl.name);
@@ -574,7 +589,7 @@ BEGIN
         success := TRUE;
         Files.Set(RF, AddF, 0);
         len := Files.Length(AddF);
-        
+
         (* Generate unique temp name *)
         tempName := Temp;
         Files.Delete(tempName, res);
@@ -584,10 +599,10 @@ BEGIN
           Files.Close(AddF);
           success := FALSE;
         END;
-        
+
         IF success THEN
           Files.Set(Rtemp, tempFile, 0);
-          
+
           (* Compress to temporary file *)
           Len := 0;
           BufferPtr := 0;
@@ -595,7 +610,7 @@ BEGIN
           CurByte := 0;
           Compress(RF, Rtemp, len);
           Files.Close(AddF);
-          
+
           (* Write header with final values *)
           COPY(nl.name, h.name);
           h.extensions := {};
@@ -606,18 +621,18 @@ BEGIN
             h.ratio := 0.0;
           END;
           WriteHeader(Ra, h);
-          
+
           (* Copy compressed data from temp to archive *)
           Files.Set(Rtemp, tempFile, 0);
           CopyFrom(Rtemp, Ra, Len);
           Files.Close(tempFile);
           Files.Delete(tempName, res);
-          
+
           Out.String("Added: "); Out.String(nl.name);
           Out.String(" ("); Out.Int(Len, 0); Out.String(" bytes, ");
           Out.Real(h.ratio, 2); Out.String("% ratio)"); Out.Ln;
           changed := TRUE;
-          
+
           (* Add to tracking list AFTER successful addition *)
           ha := FileUtil.NewFileNode(nl.name);
           ha.next := addL;
@@ -627,7 +642,7 @@ BEGIN
     END;
     nl := nl.next;
   END;
-  
+
   (* Always write EOF marker at current position *)
   IF changed OR ~archiveExists THEN
     h.name := EOFName;
@@ -636,12 +651,9 @@ BEGIN
     h.extensions := {};
     WriteHeader(Ra, h);
   END;
-  
-  IF archiveExists THEN
-    Files.Close(ArcF);
-  ELSE
-    Files.Register(ArcF);
-  END;
+
+  Files.Register(ArcF);  (* Always register to save changes *)
+  Files.Close(ArcF);
 END Add;
 
 PROCEDURE Extract*(archive: ARRAY OF CHAR; files: FileUtil.FileList);
@@ -686,7 +698,7 @@ BEGIN
           maxLen := h.length;
 
           Expand(Ra, RF);
-          Files.Register(AddF);
+          Files.Register(AddF);  (* Register before close! *)
           Files.Close(AddF);
           Out.String("Extracted: "); Out.String(nl.name); Out.Ln;
         END;
@@ -698,7 +710,7 @@ BEGIN
     Files.Set(Ra, ArcF, pos + h.length);
     ReadHeader(Ra, h, err);
   END;
-  Files.Register(ArcF);
+  (* Don't need to Register ArcF since we only read from it *)
   Files.Close(ArcF);
 END Extract;
 
@@ -735,7 +747,7 @@ BEGIN
       maxLen := h.length;
 
       Expand(Ra, RF);
-      Files.Register(AddF);
+      Files.Register(AddF);  (* Register before close! *)
       Files.Close(AddF);
       Out.String("Extracted: "); Out.String(h.name); Out.Ln;
     END;
@@ -745,9 +757,9 @@ BEGIN
     ReadHeader(Ra, h, err);
   END;
 
-  Files.Register(ArcF);
-  Files.Close(ArcF);
+  Files.Close(ArcF);  (* No Register needed - we only read from it *)
 END ExtractAll;
+
 
 PROCEDURE Delete*(archive: ARRAY OF CHAR; files: FileUtil.FileList);
 VAR
