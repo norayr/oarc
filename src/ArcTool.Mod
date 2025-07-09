@@ -224,6 +224,7 @@ BEGIN
       chk := chk + ORD(h.name[pos]);
       INC(pos)
     END;
+    h.name[31] := 0X; (* Ensure null termination *)
     chk := chk + h.length + ENTIER(h.ratio) + (h.time MOD xx) + (h.date MOD xx);
     err := chk # h.check
   ELSE
@@ -236,9 +237,12 @@ VAR i: LONGINT;
 BEGIN
   h.check := 0;
   i := 0;
-  WHILE i < 32 DO
+  WHILE (i < 32) & (h.name[i] # 0X) DO
     h.check := h.check + ORD(h.name[i]);
     INC(i)
+  END;
+  WHILE i < 32 DO
+    h.name[i] := 0X; INC(i)
   END;
   Platform.GetClock(h.time, h.date);
   h.check := h.check + h.length + (h.time MOD xx) + (h.date MOD xx) + ENTIER(h.ratio);
@@ -263,7 +267,7 @@ BEGIN
   IF CurBitNr = 7 THEN
     IF BufferPtr = BufferSize THEN
       Files.ReadBytes(R, Buffer, BufferSize);
-      INC(Len, BufferSize);
+      INC(Len, BufferSize - R.res); (* Account for partial reads *)
       IF Len >= maxLen + BufferSize THEN Err := TRUE END;
       BufferPtr := 0
     END;
@@ -300,7 +304,7 @@ BEGIN
     IF CurBitNr = 7 THEN
       IF BufferPtr = BufferSize THEN
         Files.ReadBytes(R, Buffer, BufferSize);
-        INC(Len, BufferSize);
+        INC(Len, BufferSize - R.res); (* Account for partial reads *)
         IF Len >= maxLen + BufferSize THEN Err := TRUE END;
         BufferPtr := 0
       END;
@@ -360,8 +364,6 @@ BEGIN
     DEC(i)
   END
 END OutputBits;
-
-
 PROCEDURE Compress(VAR Input, Output: Files.Rider; maxbytes: LONGINT);
 VAR
   i, lookAheadBytes, currentPosition, replaceCount, matchLength, matchPosition: INTEGER;
@@ -416,7 +418,7 @@ BEGIN
         DEC(lookAheadBytes)
       END;
       currentPosition := (currentPosition+1) MOD (WindowSize-1);
-      IF currentPosition = 0 THEN currentPosition := WindowSize-1 END;
+      (* Don't add the extra check for currentPosition = 0 *)
       IF lookAheadBytes # 0 THEN
         matchLength := AddString(currentPosition, matchPosition)
       END;
@@ -425,7 +427,7 @@ BEGIN
   END;
   OutputBit(Output, 0);
   OutputBits(Output, EndOfStream, IndexBitCount);
-  FlushBits(Output); (* Add this line *)
+  FlushBits(Output);
 END Compress;
 
 PROCEDURE Expand(VAR Input, Output: Files.Rider);
@@ -447,15 +449,14 @@ BEGIN
         Window[currentPosition+WindowSize-1] := ch;
       END;
       currentPosition := (currentPosition+1) MOD (WindowSize-1);
-      IF currentPosition = 0 THEN currentPosition := WindowSize-1 END;
     ELSE
       matchPosition := SHORT(InputBits(Input, IndexBitCount));
       IF matchPosition = EndOfStream THEN EXIT END;
       matchLength := SHORT(InputBits(Input, LengthBitCount));
-      INC(matchLength, BreakEven);
+      INC(matchLength, BreakEven);  (* Not BreakEven+1 *)
       i := 0;
-      WHILE i <= matchLength DO
-        ch := Window[(matchPosition+i) MOD (WindowSize-1)];
+      WHILE i <= matchLength DO  (* Use <= not < *)
+        ch := Window[matchPosition+i];
         Files.Write(Output, ch);
         Window[currentPosition] := ch;
         (* Maintain mirror for lookahead buffer *)
@@ -463,7 +464,6 @@ BEGIN
           Window[currentPosition+WindowSize-1] := ch;
         END;
         currentPosition := (currentPosition+1) MOD (WindowSize-1);
-        IF currentPosition = 0 THEN currentPosition := WindowSize-1 END;
         INC(i)
       END
     END;
@@ -488,7 +488,7 @@ BEGIN
       Files.Set(R, ArcF, Files.Pos(R) + h.length);
       ReadHeader(R, h, err)
     END;
-    Files.Register(ArcF); (* Register before close! *)
+    Files.Register(ArcF);
     Files.Close(ArcF);
     IF err THEN Out.String(err1); Out.Ln END;
   ELSE
@@ -502,7 +502,7 @@ VAR
   Ra, RF, Rtemp: Files.Rider;
   h: Header;
   nl: FileUtil.FileList;
-  len, pos: LONGINT;
+  len, pos, eofPos: LONGINT;
   archiveExists: BOOLEAN;
   err: BOOLEAN;
   addL, ha: FileUtil.FileList;
@@ -510,30 +510,48 @@ VAR
   changed: BOOLEAN;
   tempName: ARRAY 256 OF CHAR;
   res: INTEGER;
-  success: BOOLEAN; (* Added to control flow *)
+  success: BOOLEAN;
 BEGIN
   changed := FALSE;
   ArcF := Files.Old(archive);
   archiveExists := (ArcF # NIL);
+  
   IF ~archiveExists THEN
     ArcF := Files.New(archive);
     IF ArcF = NIL THEN RETURN END;
     Files.Set(Ra, ArcF, 0);
-  END;
-  (* Build list of existing files *)
-  addL := NIL;
-  IF archiveExists THEN
+    eofPos := 0;
+  ELSE
+    (* Build list of existing files and find EOF position *)
+    addL := NIL;
     Files.Set(Ra, ArcF, 0);
+    pos := 0;
     ReadHeader(Ra, h, err);
     WHILE (h.name # EOFName) & ~err DO
+      (* Add to existing files list *)
       ha := FileUtil.NewFileNode(h.name);
       ha.next := addL;
       addL := ha;
-      Files.Set(Ra, ArcF, Files.Pos(Ra) + h.length);
+      
+      (* Move to next entry *)
+      pos := Files.Pos(Ra) + h.length;
+      Files.Set(Ra, ArcF, pos);
       ReadHeader(Ra, h, err);
     END;
-    Files.Set(Ra, ArcF, Files.Length(ArcF));
+    
+    IF err THEN
+      Out.String("Error reading archive"); Out.Ln;
+      Files.Close(ArcF);
+      RETURN;
+    END;
+    
+    (* Remember EOF position - we'll write new entries here *)
+    eofPos := pos;
   END;
+  
+  (* Position at EOF location to add new files *)
+  Files.Set(Ra, ArcF, eofPos);
+  
   (* Add new files *)
   nl := files;
   WHILE nl # NIL DO
@@ -553,12 +571,13 @@ BEGIN
       IF AddF = NIL THEN
         Out.String("    "); Out.String(nl.name); Out.String(err2); Out.Ln;
       ELSE
-        success := TRUE; (* Initialize success flag *)
+        success := TRUE;
         Files.Set(RF, AddF, 0);
         len := Files.Length(AddF);
+        
         (* Generate unique temp name *)
         tempName := Temp;
-        Files.Delete(tempName, res); (* Delete any existing temp file *)
+        Files.Delete(tempName, res);
         tempFile := Files.New(tempName);
         IF tempFile = NIL THEN
           Out.String("Failed to create temp file"); Out.Ln;
@@ -568,14 +587,15 @@ BEGIN
         
         IF success THEN
           Files.Set(Rtemp, tempFile, 0);
+          
           (* Compress to temporary file *)
           Len := 0;
           BufferPtr := 0;
           CurBitNr := 7;
           CurByte := 0;
           Compress(RF, Rtemp, len);
-          FlushBits(Rtemp);
           Files.Close(AddF);
+          
           (* Write header with final values *)
           COPY(nl.name, h.name);
           h.extensions := {};
@@ -586,17 +606,19 @@ BEGIN
             h.ratio := 0.0;
           END;
           WriteHeader(Ra, h);
+          
           (* Copy compressed data from temp to archive *)
           Files.Set(Rtemp, tempFile, 0);
           CopyFrom(Rtemp, Ra, Len);
           Files.Close(tempFile);
           Files.Delete(tempName, res);
+          
           Out.String("Added: "); Out.String(nl.name);
           Out.String(" ("); Out.Int(Len, 0); Out.String(" bytes, ");
           Out.Real(h.ratio, 2); Out.String("% ratio)"); Out.Ln;
           changed := TRUE;
           
-          (* Add to tracking list *)
+          (* Add to tracking list AFTER successful addition *)
           ha := FileUtil.NewFileNode(nl.name);
           ha.next := addL;
           addL := ha;
@@ -605,7 +627,8 @@ BEGIN
     END;
     nl := nl.next;
   END;
-  (* Write EOF marker *)
+  
+  (* Always write EOF marker at current position *)
   IF changed OR ~archiveExists THEN
     h.name := EOFName;
     h.length := 0;
@@ -613,6 +636,7 @@ BEGIN
     h.extensions := {};
     WriteHeader(Ra, h);
   END;
+  
   IF archiveExists THEN
     Files.Close(ArcF);
   ELSE
@@ -640,7 +664,7 @@ BEGIN
   ReadHeader(Ra, h, err);
 
   WHILE (h.name # EOFName) & ~err DO
-    pos := Files.Pos(Ra); (* Remember position after header *)
+    pos := Files.Pos(Ra);
     nl := files;
     found := FALSE;
 
@@ -662,7 +686,7 @@ BEGIN
           maxLen := h.length;
 
           Expand(Ra, RF);
-          Files.Register(AddF); (* This must come before Close! *)
+          Files.Register(AddF);
           Files.Close(AddF);
           Out.String("Extracted: "); Out.String(nl.name); Out.Ln;
         END;
@@ -674,7 +698,7 @@ BEGIN
     Files.Set(Ra, ArcF, pos + h.length);
     ReadHeader(Ra, h, err);
   END;
-  Files.Register(ArcF); (* Register before close! *)
+  Files.Register(ArcF);
   Files.Close(ArcF);
 END Extract;
 
@@ -696,7 +720,7 @@ BEGIN
   ReadHeader(Ra, h, err);
 
   WHILE (h.name # EOFName) & ~err DO
-    pos := Files.Pos(Ra); (* Remember position after header *)
+    pos := Files.Pos(Ra);
     AddF := Files.New(h.name);
     IF AddF = NIL THEN
       Out.String("Failed to create: "); Out.String(h.name); Out.Ln;
@@ -794,7 +818,7 @@ BEGIN
   h.name := EOFName;
   h.length := 0;
   h.ratio := 0.0;
-          h.extensions := {};
+  h.extensions := {};
   WriteHeader(Rt, h);
 
   Files.Close(ArcF);
