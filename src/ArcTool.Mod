@@ -36,7 +36,7 @@ TYPE
     length, check: LONGINT;
     date, time: LONGINT;
     ratio: REAL;
-    extensions: LONGINT
+    extensions: SET
   END;
   EnumProc = PROCEDURE (h: Header; VAR stop: BOOLEAN);
 
@@ -176,14 +176,16 @@ END Init;
 PROCEDURE CopyFrom(VAR Ri, Ro: Files.Rider; len: LONGINT);
 VAR i: LONGINT;
 BEGIN
-  Files.ReadBytes(Ri, Buffer, BufferSize);
-  i := BufferSize;
-  WHILE i <= len DO
-    Files.WriteBytes(Ro, Buffer, BufferSize);
+  i := 0;
+  WHILE i + BufferSize <= len DO
     Files.ReadBytes(Ri, Buffer, BufferSize);
-    INC(i, BufferSize)
+    Files.WriteBytes(Ro, Buffer, BufferSize);
+    INC(i, BufferSize);
   END;
-  Files.WriteBytes(Ro, Buffer, len MOD BufferSize)
+  IF i < len THEN
+    Files.ReadBytes(Ri, Buffer, len - i);
+    Files.WriteBytes(Ro, Buffer, len - i);
+  END;
 END CopyFrom;
 
 PROCEDURE ReadHeader(VAR R: Files.Rider; VAR h: Header; VAR err: BOOLEAN);
@@ -211,10 +213,10 @@ BEGIN
   Files.ReadReal(R, h.ratio);
   (* Handle extensions *)
   IF h.length < 0 THEN
-    Files.ReadLInt(R, h.extensions);
+    Files.ReadSet(R, h.extensions);
     h.length := -h.length;
   ELSE
-    h.extensions := 0;
+    h.extensions := {};
   END;
   IF (h.ratio > 0.0) & (h.ratio < 1000000.0) THEN
     pos := 0; chk := 0;
@@ -222,7 +224,7 @@ BEGIN
       chk := chk + ORD(h.name[pos]);
       INC(pos)
     END;
-    chk := chk + h.length + ENTIER(h.ratio) + (h.time MOD xx) + (h.date MOD xx) + h.extensions;
+    chk := chk + h.length + ENTIER(h.ratio) + (h.time MOD xx) + (h.date MOD xx);
     err := chk # h.check
   ELSE
     err := TRUE
@@ -239,9 +241,9 @@ BEGIN
     INC(i)
   END;
   Platform.GetClock(h.time, h.date);
-  h.check := h.check + h.length + (h.time MOD xx) + (h.date MOD xx) + ENTIER(h.ratio) + h.extensions;
+  h.check := h.check + h.length + (h.time MOD xx) + (h.date MOD xx) + ENTIER(h.ratio);
   Files.WriteBytes(R, h.name, 32);
-  IF h.extensions # 0 THEN
+  IF h.extensions # {} THEN
     Files.WriteLInt(R, -h.length);
   ELSE
     Files.WriteLInt(R, h.length);
@@ -250,8 +252,8 @@ BEGIN
   Files.WriteLInt(R, h.date);
   Files.WriteLInt(R, h.time);
   Files.WriteReal(R, h.ratio);
-  IF h.extensions # 0 THEN
-    Files.WriteLInt(R, h.extensions);
+  IF h.extensions # {} THEN
+    Files.WriteSet(R, h.extensions);
   END;
 END WriteHeader;
 
@@ -273,6 +275,21 @@ BEGIN
   IF CurBitNr < 0 THEN CurBitNr := 7 END;
   RETURN h
 END InputBit;
+
+PROCEDURE FlushBits(VAR R: Files.Rider);
+BEGIN
+  IF CurBitNr # 7 THEN
+    Buffer[BufferPtr] := CHR(CurByte);
+    INC(BufferPtr);
+    CurBitNr := 7;
+    CurByte := 0;
+  END;
+  IF BufferPtr > 0 THEN
+    Files.WriteBytes(R, Buffer, BufferPtr);
+    INC(Len, BufferPtr);
+    BufferPtr := 0;
+  END;
+END FlushBits;
 
 PROCEDURE InputBits(VAR R: Files.Rider; count: LONGINT): LONGINT;
 VAR i, h: LONGINT;
@@ -344,19 +361,6 @@ BEGIN
   END
 END OutputBits;
 
-(* Add FlushBits procedure *)
-PROCEDURE FlushBits(VAR R: Files.Rider);
-BEGIN
-  IF CurBitNr # 7 THEN
-    Buffer[BufferPtr] := CHR(CurByte);
-    INC(BufferPtr)
-  END;
-  IF BufferPtr > 0 THEN
-    Files.WriteBytes(R, Buffer, BufferPtr);
-    INC(Len, BufferPtr);
-    BufferPtr := 0
-  END
-END FlushBits;
 
 PROCEDURE Compress(VAR Input, Output: Files.Rider; maxbytes: LONGINT);
 VAR
@@ -484,7 +488,7 @@ BEGIN
       Files.Set(R, ArcF, Files.Pos(R) + h.length);
       ReadHeader(R, h, err)
     END;
-    Files.Register(ArcF);
+    Files.Register(ArcF); (* Register before close! *)
     Files.Close(ArcF);
     IF err THEN Out.String(err1); Out.Ln END;
   ELSE
@@ -494,118 +498,125 @@ END Directory;
 
 PROCEDURE Add*(archive: ARRAY OF CHAR; files: FileUtil.FileList);
 VAR
-  ArcF, AddF, TmpF: Files.File;
-  Ra, RF, Rt: Files.Rider;
+  ArcF, AddF, tempFile: Files.File;
+  Ra, RF, Rtemp: Files.Rider;
   h: Header;
   nl: FileUtil.FileList;
-  len, startPos, compressedLength: LONGINT;
+  len, pos: LONGINT;
   archiveExists: BOOLEAN;
-  percent: REAL;
   err: BOOLEAN;
-  pos: LONGINT;
+  addL, ha: FileUtil.FileList;
+  found: BOOLEAN;
+  changed: BOOLEAN;
+  tempName: ARRAY 256 OF CHAR;
+  res: INTEGER;
+  success: BOOLEAN; (* Added to control flow *)
 BEGIN
-  (* Check if archive exists *)
+  changed := FALSE;
   ArcF := Files.Old(archive);
   archiveExists := (ArcF # NIL);
-
-  IF archiveExists THEN
-    (* Copy existing archive to temp file, excluding EOF marker *)
-    TmpF := Files.New(Temp);
+  IF ~archiveExists THEN
+    ArcF := Files.New(archive);
+    IF ArcF = NIL THEN RETURN END;
     Files.Set(Ra, ArcF, 0);
-    Files.Set(Rt, TmpF, 0);
-    
+  END;
+  (* Build list of existing files *)
+  addL := NIL;
+  IF archiveExists THEN
+    Files.Set(Ra, ArcF, 0);
     ReadHeader(Ra, h, err);
     WHILE (h.name # EOFName) & ~err DO
-      pos := Files.Pos(Ra);
-      WriteHeader(Rt, h);
-      Files.Set(Ra, ArcF, pos);
-      CopyFrom(Ra, Rt, h.length);
+      ha := FileUtil.NewFileNode(h.name);
+      ha.next := addL;
+      addL := ha;
+      Files.Set(Ra, ArcF, Files.Pos(Ra) + h.length);
       ReadHeader(Ra, h, err);
     END;
-    
-    Files.Close(ArcF);
-    Ra := Rt; (* Use temp file as base *)
-  ELSE
-    (* Create new archive *)
-    TmpF := Files.New(Temp);
-    Files.Set(Ra, TmpF, 0);
+    Files.Set(Ra, ArcF, Files.Length(ArcF));
   END;
-
   (* Add new files *)
   nl := files;
   WHILE nl # NIL DO
-    AddF := Files.Old(nl.name);
-    IF AddF = NIL THEN
-      Out.String(nl.name); Out.String(err2); Out.Ln;
+    (* Check for duplicates *)
+    ha := addL;
+    found := FALSE;
+    WHILE (ha # NIL) & ~found DO
+      found := (ha.name = nl.name); 
+      ha := ha.next;
+    END;
+    
+    IF found THEN
+      Out.String("Warning: "); Out.String(nl.name); 
+      Out.String(" already exists in archive"); Out.Ln;
     ELSE
-      Files.Set(RF, AddF, 0);
-      len := Files.Length(AddF);
-
-      (* Remember start position for header update *)
-      startPos := Files.Pos(Ra);
-
-      (* Write initial header *)
-      COPY(nl.name, h.name);
-      h.length := len;
-      h.ratio := 0.0; (* Will be updated later *)
-      h.extensions := 0;
-      WriteHeader(Ra, h);
-
-      (* Initialize compression state *)
-      Len := 0;
-      BufferPtr := 0;
-      CurBitNr := 7;
-      CurByte := 0;
-
-      (* Compress and add file content *)
-      Compress(RF, Ra, len);
-      compressedLength := Len;
-
-      (* Calculate compression ratio *)
-      IF len > 0 THEN
-        h.ratio := 100.0 * compressedLength / len;
+      AddF := Files.Old(nl.name);
+      IF AddF = NIL THEN
+        Out.String("    "); Out.String(nl.name); Out.String(err2); Out.Ln;
       ELSE
-        h.ratio := 0.0;
+        success := TRUE; (* Initialize success flag *)
+        Files.Set(RF, AddF, 0);
+        len := Files.Length(AddF);
+        (* Generate unique temp name *)
+        tempName := Temp;
+        Files.Delete(tempName, res); (* Delete any existing temp file *)
+        tempFile := Files.New(tempName);
+        IF tempFile = NIL THEN
+          Out.String("Failed to create temp file"); Out.Ln;
+          Files.Close(AddF);
+          success := FALSE;
+        END;
+        
+        IF success THEN
+          Files.Set(Rtemp, tempFile, 0);
+          (* Compress to temporary file *)
+          Len := 0;
+          BufferPtr := 0;
+          CurBitNr := 7;
+          CurByte := 0;
+          Compress(RF, Rtemp, len);
+          FlushBits(Rtemp);
+          Files.Close(AddF);
+          (* Write header with final values *)
+          COPY(nl.name, h.name);
+          h.extensions := {};
+          h.length := Len;
+          IF len > 0 THEN
+            h.ratio := 100.0 * Len / len;
+          ELSE
+            h.ratio := 0.0;
+          END;
+          WriteHeader(Ra, h);
+          (* Copy compressed data from temp to archive *)
+          Files.Set(Rtemp, tempFile, 0);
+          CopyFrom(Rtemp, Ra, Len);
+          Files.Close(tempFile);
+          Files.Delete(tempName, res);
+          Out.String("Added: "); Out.String(nl.name);
+          Out.String(" ("); Out.Int(Len, 0); Out.String(" bytes, ");
+          Out.Real(h.ratio, 2); Out.String("% ratio)"); Out.Ln;
+          changed := TRUE;
+          
+          (* Add to tracking list *)
+          ha := FileUtil.NewFileNode(nl.name);
+          ha.next := addL;
+          addL := ha;
+        END;
       END;
-
-      (* Update header with actual ratio *)
-      pos := Files.Pos(Ra);
-      Files.Set(Ra, TmpF, startPos);
-      WriteHeader(Ra, h);
-      Files.Set(Ra, TmpF, pos);
-
-      Files.Register(AddF);
-      Files.Close(AddF);
-      Out.String("Added: "); Out.String(nl.name);
-      Out.String(" ("); Out.Int(compressedLength, 0); Out.String(" bytes, ");
-
-      (* Output ratio using available Out.Real *)
-      percent := h.ratio;
-      Out.Real(percent, 2); (* 2 decimal places *)
-      Out.String("% ratio)"); Out.Ln;
     END;
     nl := nl.next;
   END;
-
-  (* Write end-of-archive marker *)
-  h.name := EOFName;
-  h.length := 0;
-  h.ratio := 0.0;
-  h.extensions := 0;
-  WriteHeader(Ra, h);
-
-  Files.Register(TmpF);
-  Files.Close(TmpF);
-  
-  (* Replace original archive *)
-  IF archiveExists THEN
-    IF ~FileUtil.DeleteFile(archive) THEN
-      Out.String("Warning: could not delete original archive"); Out.Ln;
-    END;
+  (* Write EOF marker *)
+  IF changed OR ~archiveExists THEN
+    h.name := EOFName;
+    h.length := 0;
+    h.ratio := 0.0;
+    h.extensions := {};
+    WriteHeader(Ra, h);
   END;
-  
-  IF ~FileUtil.RenameFile(Temp, archive) THEN
-    Out.String("Error: could not rename temp file to archive"); Out.Ln;
+  IF archiveExists THEN
+    Files.Close(ArcF);
+  ELSE
+    Files.Register(ArcF);
   END;
 END Add;
 
@@ -642,16 +653,16 @@ BEGIN
           Out.String("Failed to create: "); Out.String(nl.name); Out.Ln;
         ELSE
           Files.Set(RF, AddF, 0);
-          
+
           (* Initialize expansion state *)
           Len := 0;
           BufferPtr := BufferSize;
           CurBitNr := 7;
           CurByte := 0;
           maxLen := h.length;
-          
+
           Expand(Ra, RF);
-          Files.Register(AddF);
+          Files.Register(AddF); (* This must come before Close! *)
           Files.Close(AddF);
           Out.String("Extracted: "); Out.String(nl.name); Out.Ln;
         END;
@@ -663,7 +674,7 @@ BEGIN
     Files.Set(Ra, ArcF, pos + h.length);
     ReadHeader(Ra, h, err);
   END;
-  Files.Register(ArcF);
+  Files.Register(ArcF); (* Register before close! *)
   Files.Close(ArcF);
 END Extract;
 
@@ -691,14 +702,14 @@ BEGIN
       Out.String("Failed to create: "); Out.String(h.name); Out.Ln;
     ELSE
       Files.Set(RF, AddF, 0);
-      
+
       (* Initialize expansion state *)
       Len := 0;
       BufferPtr := BufferSize;
       CurBitNr := 7;
       CurByte := 0;
       maxLen := h.length;
-      
+
       Expand(Ra, RF);
       Files.Register(AddF);
       Files.Close(AddF);
@@ -722,45 +733,90 @@ VAR
   pos: LONGINT;
   nl: FileUtil.FileList;
   err: BOOLEAN;
-  success: BOOLEAN;
   found: BOOLEAN;
+  deleted: BOOLEAN;
+  tempName: ARRAY 256 OF CHAR;
 BEGIN
   ArcF := Files.Old(archive);
-  IF ArcF # NIL THEN
-    TmpF := Files.New(Temp);
-    Files.Set(Rt, TmpF, 0);
-    Files.Set(Ra, ArcF, 0);
-    ReadHeader(Ra, h, err);
-    WHILE (h.name # EOFName) & ~err DO
-      nl := files;
-      found := FALSE;
-      WHILE nl # NIL DO
-        IF h.name = nl.name THEN
-          found := TRUE;
-        END;
-        nl := nl.next;
-      END;
+  IF ArcF = NIL THEN
+    Out.String(archive); Out.String(err2); Out.Ln;
+    RETURN;
+  END;
 
-      IF ~found THEN
-        WriteHeader(Rt, h);
-        pos := Files.Pos(Ra);
-        CopyFrom(Ra, Rt, h.length);
-      END;
+  TmpF := Files.New("");
+  IF TmpF = NIL THEN
+    Out.String("Failed to create temporary file"); Out.Ln;
+    Files.Close(ArcF);
+    RETURN;
+  END;
 
-      pos := Files.Pos(Ra);
-      Files.Set(Ra, ArcF, pos + h.length);
-      ReadHeader(Ra, h, err)
+  Files.Set(Rt, TmpF, 0);
+  Files.Set(Ra, ArcF, 0);
+  deleted := FALSE;
+
+  ReadHeader(Ra, h, err);
+  WHILE (h.name # EOFName) & ~err DO
+    pos := Files.Pos(Ra);
+
+    (* Check if this file should be deleted *)
+    nl := files;
+    found := FALSE;
+    WHILE (nl # NIL) & ~found DO
+      IF h.name = nl.name THEN
+        found := TRUE;
+        deleted := TRUE;
+        Out.String("Deleted: "); Out.String(h.name); Out.Ln;
+      END;
+      nl := nl.next;
     END;
 
-    (* Finalize temp archive and replace original *)
-    Files.Register(ArcF);
+    IF ~found THEN
+      (* Copy this entry to temp file *)
+      WriteHeader(Rt, h);
+      Files.Set(Ra, ArcF, pos);
+      CopyFrom(Ra, Rt, h.length);
+    ELSE
+      (* Skip this entry *)
+      Files.Set(Ra, ArcF, pos + h.length);
+    END;
+
+    ReadHeader(Ra, h, err);
+  END;
+
+  IF err THEN
+    Out.String(err1); Out.Ln;
     Files.Close(ArcF);
-    Files.Register(TmpF);
     Files.Close(TmpF);
-    success := FileUtil.DeleteFile(archive);
-    success := FileUtil.RenameFile(Temp, archive);
+    RETURN;
+  END;
+
+  (* Write EOF marker to temp file *)
+  h.name := EOFName;
+  h.length := 0;
+  h.ratio := 0.0;
+          h.extensions := {};
+  WriteHeader(Rt, h);
+
+  Files.Close(ArcF);
+  Files.Register(TmpF);
+  Files.Close(TmpF);
+  Files.GetName(TmpF, tempName);
+
+  IF deleted THEN
+    (* Replace original with temp file *)
+    IF FileUtil.DeleteFile(archive) THEN
+      IF ~FileUtil.RenameFile(tempName, archive) THEN
+        Out.String("Error: could not rename temp file"); Out.Ln;
+      END;
+    ELSE
+      Out.String("Error: could not delete original archive"); Out.Ln;
+    END;
   ELSE
-    Out.String(archive); Out.String(err2); Out.Ln;
+    (* No files were deleted, remove temp file *)
+    IF ~FileUtil.DeleteFile(tempName) THEN
+      Out.String("Warning: could not clean up temp file"); Out.Ln;
+    END;
+    Out.String("No matching files found for deletion"); Out.Ln;
   END;
 END Delete;
 
