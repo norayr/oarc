@@ -531,11 +531,12 @@ BEGIN
   ArcF := Files.Old(archive);
   archiveExists := (ArcF # NIL);
 
-  IF ~archiveExists THEN
+IF ~archiveExists THEN
     ArcF := Files.New(archive);
     IF ArcF = NIL THEN RETURN END;
     Files.Set(Ra, ArcF, 0);
     eofPos := 0;
+    addL := NIL; (* Initialize empty list *)
   ELSE
     (* Build list of existing files and find EOF position *)
     addL := NIL;
@@ -543,6 +544,11 @@ BEGIN
     pos := 0;
     ReadHeader(Ra, h, err);
     WHILE (h.name # EOFName) & ~err DO
+      (* Debug output *)
+      Out.String("Found existing: "); Out.String(h.name); 
+      Out.String(" at pos "); Out.Int(pos, 0);
+      Out.String(" length "); Out.Int(h.length, 0); Out.Ln;
+      
       (* Add to existing files list *)
       ha := FileUtil.NewFileNode(h.name);
       ha.next := addL;
@@ -555,21 +561,33 @@ BEGIN
     END;
 
     IF err THEN
-      Out.String("Error reading archive"); Out.Ln;
+      Out.String("Error reading archive at position "); Out.Int(pos, 0); Out.Ln;
       Files.Close(ArcF);
       RETURN;
     END;
 
     (* Remember EOF position - we'll write new entries here *)
     eofPos := pos;
+    Out.String("EOF position: "); Out.Int(eofPos, 0); Out.Ln;
   END;
 
   (* Position at EOF location to add new files *)
   Files.Set(Ra, ArcF, eofPos);
 
-  (* Add new files *)
+(* Add new files *)
   nl := files;
+  
+  (* Debug: print the file list *)
+  Out.String("Files to add:"); Out.Ln;
+  ha := nl;
+  WHILE ha # NIL DO
+    Out.String("  - "); Out.String(ha.name); Out.Ln;
+    ha := ha.next;
+  END;
+  
   WHILE nl # NIL DO
+    Out.String("Processing: "); Out.String(nl.name); Out.Ln;
+    
     (* Check for duplicates *)
     ha := addL;
     found := FALSE;
@@ -611,6 +629,8 @@ BEGIN
           Compress(RF, Rtemp, len);
           Files.Close(AddF);
 
+          Files.Register(tempFile);
+
           (* Write header with final values *)
           COPY(nl.name, h.name);
           h.extensions := {};
@@ -625,6 +645,7 @@ BEGIN
           (* Copy compressed data from temp to archive *)
           Files.Set(Rtemp, tempFile, 0);
           CopyFrom(Rtemp, Ra, Len);
+          Files.Register(tempFile);
           Files.Close(tempFile);
           Files.Delete(tempName, res);
 
@@ -760,7 +781,6 @@ BEGIN
   Files.Close(ArcF);  (* No Register needed - we only read from it *)
 END ExtractAll;
 
-
 PROCEDURE Delete*(archive: ARRAY OF CHAR; files: FileUtil.FileList);
 VAR
   ArcF, TmpF: Files.File;
@@ -772,6 +792,8 @@ VAR
   found: BOOLEAN;
   deleted: BOOLEAN;
   tempName: ARRAY 256 OF CHAR;
+  newName: ARRAY 256 OF CHAR;
+  res: INTEGER;
 BEGIN
   ArcF := Files.Old(archive);
   IF ArcF = NIL THEN
@@ -779,7 +801,12 @@ BEGIN
     RETURN;
   END;
 
-  TmpF := Files.New("");
+  (* Create temp file with unique name *)
+  tempName := Temp;
+  Strings.Append(".delete", tempName);
+  Files.Delete(tempName, res); (* Clean up any old temp file *)
+  
+  TmpF := Files.New(tempName);
   IF TmpF = NIL THEN
     Out.String("Failed to create temporary file"); Out.Ln;
     Files.Close(ArcF);
@@ -811,6 +838,7 @@ BEGIN
       WriteHeader(Rt, h);
       Files.Set(Ra, ArcF, pos);
       CopyFrom(Ra, Rt, h.length);
+      Files.Set(Ra, ArcF, pos + h.length); (* Reset position for next read *)
     ELSE
       (* Skip this entry *)
       Files.Set(Ra, ArcF, pos + h.length);
@@ -823,6 +851,7 @@ BEGIN
     Out.String(err1); Out.Ln;
     Files.Close(ArcF);
     Files.Close(TmpF);
+    Files.Delete(tempName, res);
     RETURN;
   END;
 
@@ -833,25 +862,44 @@ BEGIN
   h.extensions := {};
   WriteHeader(Rt, h);
 
+  (* Close both files *)
   Files.Close(ArcF);
   Files.Register(TmpF);
   Files.Close(TmpF);
-  Files.GetName(TmpF, tempName);
 
   IF deleted THEN
-    (* Replace original with temp file *)
-    IF FileUtil.DeleteFile(archive) THEN
-      IF ~FileUtil.RenameFile(tempName, archive) THEN
-        Out.String("Error: could not rename temp file"); Out.Ln;
-      END;
-    ELSE
-      Out.String("Error: could not delete original archive"); Out.Ln;
+    (* Create a new name for the archive *)
+    COPY(archive, newName);
+    Strings.Append(".new", newName);
+    
+    (* Rename temp to new name *)
+    res := 0;
+    Files.Rename(tempName, newName, res);
+    IF res # 0 THEN
+      Out.String("Error: could not rename temp file ("); 
+      Out.Int(res, 0); Out.String(")"); Out.Ln;
+      Files.Delete(tempName, res);
+      RETURN;
+    END;
+    
+    (* Delete original *)
+    Files.Delete(archive, res);
+    IF res # 0 THEN
+      Out.String("Warning: could not delete original (error "); 
+      Out.Int(res, 0); Out.String("), trying rename"); Out.Ln;
+    END;
+    
+    (* Rename new to original *)
+    Files.Rename(newName, archive, res);
+    IF res # 0 THEN
+      Out.String("Error: could not rename new file to original (");
+      Out.Int(res, 0); Out.String(")"); Out.Ln;
+      (* Try to recover *)
+      Files.Rename(newName, archive, res);
     END;
   ELSE
     (* No files were deleted, remove temp file *)
-    IF ~FileUtil.DeleteFile(tempName) THEN
-      Out.String("Warning: could not clean up temp file"); Out.Ln;
-    END;
+    Files.Delete(tempName, res);
     Out.String("No matching files found for deletion"); Out.Ln;
   END;
 END Delete;

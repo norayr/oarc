@@ -9,18 +9,17 @@ VAR
   lastFile: FileUtil.FileList;
   arg: ARRAY 256 OF CHAR;
   detailed: BOOLEAN;
-  success: BOOLEAN; (* Added for argument retrieval status *)
 
 PROCEDURE ShowHelp;
 BEGIN
   Out.String("Oberon Arc Utility for Linux");
   Out.Ln;
   Out.String("Commands:"); Out.Ln;
-  Out.String("  list <archive> [-d]     List archive contents"); Out.Ln;
-  Out.String("  add <archive> <files>   Add files to archive");  Out.Ln;
+  Out.String("  list <archive> [-d]       List archive contents"); Out.Ln;
+  Out.String("  add <archive> <files>     Add files to archive");  Out.Ln;
   Out.String("  extract <archive> [files] Extract files from archive");  Out.Ln;
-  Out.String("  extractall <archive>    Extract all files");     Out.Ln;
-  Out.String("  delete <archive> <files> Delete files from archive");    Out.Ln;
+  Out.String("  extractall <archive>      Extract all files");     Out.Ln;
+  Out.String("  delete <archive> <files>  Delete files from archive");    Out.Ln;
   Out.Ln;
 END ShowHelp;
 
@@ -37,12 +36,16 @@ BEGIN
 
   IF cmd = "list" THEN
     (* Get archive name *)
+    IF i > argCount THEN
+      Out.String("Error: missing archive name"); Out.Ln;
+      RETURN;
+    END;
     Args.Get(i, archive);
     INC(i);
 
     (* Handle options *)
     detailed := FALSE;
-    IF i <= argCount THEN
+    IF i < argCount THEN  (* Changed from <= to < *)
       Args.Get(i, arg);
       IF arg = "-d" THEN
         detailed := TRUE;
@@ -54,12 +57,16 @@ BEGIN
 
   ELSIF cmd = "add" THEN
     (* Get archive name *)
+    IF i > argCount THEN
+      Out.String("Error: missing archive name"); Out.Ln;
+      RETURN;
+    END;
     Args.Get(i, archive);
     INC(i);
 
     (* Get file list *)
     files := NIL;
-    WHILE i <= argCount DO
+    WHILE i < argCount DO  (* Changed from <= to < *)
       Args.Get(i, arg);
       IF files = NIL THEN
         files := FileUtil.NewFileNode(arg);
@@ -71,16 +78,25 @@ BEGIN
       INC(i);
     END;
 
+    IF files = NIL THEN
+      Out.String("Error: no files specified"); Out.Ln;
+      RETURN;
+    END;
+
     ArcTool.Add(archive, files);
 
   ELSIF cmd = "extract" THEN
     (* Get archive name *)
+    IF i > argCount THEN
+      Out.String("Error: missing archive name"); Out.Ln;
+      RETURN;
+    END;
     Args.Get(i, archive);
     INC(i);
 
     (* Get file list *)
     files := NIL;
-    WHILE i <= argCount DO
+    WHILE i < argCount DO  (* Changed from <= to < *)
       Args.Get(i, arg);
       IF files = NIL THEN
         files := FileUtil.NewFileNode(arg);
@@ -100,17 +116,25 @@ BEGIN
 
   ELSIF cmd = "extractall" THEN
     (* Get archive name *)
+    IF i > argCount THEN
+      Out.String("Error: missing archive name"); Out.Ln;
+      RETURN;
+    END;
     Args.Get(i, archive);
     ArcTool.ExtractAll(archive);
 
   ELSIF cmd = "delete" THEN
     (* Get archive name *)
+    IF i > argCount THEN
+      Out.String("Error: missing archive name"); Out.Ln;
+      RETURN;
+    END;
     Args.Get(i, archive);
     INC(i);
 
     (* Get file list *)
     files := NIL;
-    WHILE i <= argCount DO
+    WHILE i < argCount DO  (* Changed from <= to < *)
       Args.Get(i, arg);
       IF files = NIL THEN
         files := FileUtil.NewFileNode(arg);
@@ -120,6 +144,11 @@ BEGIN
         lastFile := lastFile.next;
       END;
       INC(i);
+    END;
+
+    IF files = NIL THEN
+      Out.String("Error: no files specified"); Out.Ln;
+      RETURN;
     END;
 
     ArcTool.Delete(archive, files);
