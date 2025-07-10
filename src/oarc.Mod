@@ -12,7 +12,7 @@ VAR
 
 PROCEDURE ShowHelp;
 BEGIN
-  Out.String("Oberon Arc Utility for Linux");
+  Out.String("Oberon Arc Utility");
   Out.Ln;
   Out.String("Commands:"); Out.Ln;
   Out.String("  list <archive> [-d]       List archive contents"); Out.Ln;
