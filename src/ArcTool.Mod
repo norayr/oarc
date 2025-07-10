@@ -781,11 +781,11 @@ BEGIN
   COPY(Temp, tempName);
   i := 0;
   WHILE tempName[i] # 0X DO INC(i) END;
-  tempName[i] := '.'; tempName[i+1] := 'd'; tempName[i+2] := 'e';
+  tempName[i] := '.'; tempName[i+1] := 'd'; tempName[i+2] := 'e'; 
   tempName[i+3] := 'l'; tempName[i+4] := 0X;
-
+  
   Files.Delete(tempName, res); (* Clean up any old temp file *)
-
+  
   TmpF := Files.New(tempName);
   IF TmpF = NIL THEN
     Out.String("Failed to create temporary file"); Out.Ln;
@@ -843,17 +843,17 @@ BEGIN
   Files.Close(ArcF);
 
   IF deleted THEN
-    (* Delete original and rename temp to original *)
+    (* Try to delete original - may fail if file is cached *)
     Files.Delete(archive, res);
-    IF res # 0 THEN
-      Out.String("Warning: could not delete original archive (error ");
-      Out.Int(res, 0); Out.String(")"); Out.Ln;
-    END;
-
+    (* Don't worry about delete errors - rename will overwrite anyway *)
+    
+    (* Rename temp to original - this atomically replaces the file *)
     Files.Rename(tempName, archive, res);
     IF res # 0 THEN
-      Out.String("Error: could not rename temp file to archive (error ");
+      (* This is the real error we care about *)
+      Out.String("Error: could not update archive (error ");
       Out.Int(res, 0); Out.String(")"); Out.Ln;
+      Out.String("Updated archive saved as: "); Out.String(tempName); Out.Ln;
     END;
   ELSE
     (* No files were deleted, remove temp file *)
