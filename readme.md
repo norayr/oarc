@@ -1,4 +1,4 @@
-# oarc
+# 📜 oarc
 ## Oberon `.Arc` Archive Utility
 
 **oarc** is a command-line tool written in Oberon using the [Vishap Oberon Compiler (VOC)](https://github.com/vishapoberon/compiler) that allows you to manipulate `.Arc` archive files originally used in Oberon System 3.
