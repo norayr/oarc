@@ -376,7 +376,7 @@ BEGIN
   bytesread := 0;
   currentPosition := 1;
   i := 0;
-  
+
   (* Read initial lookahead buffer *)
   WHILE (i < LookAheadSize) & (bytesread < maxbytes) DO
     Files.Read(Input, ch);
@@ -417,7 +417,7 @@ BEGIN
     i := 0;
     WHILE i < replaceCount DO
       DeleteString((currentPosition+LookAheadSize) MOD (WindowSize-1));
-      
+
       (* Try to read next byte *)
       validRead := FALSE;
       IF bytesread < maxbytes THEN
@@ -429,11 +429,11 @@ BEGIN
           validRead := TRUE
         END
       END;
-      
+
       IF ~validRead THEN
         DEC(lookAheadBytes)
       END;
-      
+
       currentPosition := (currentPosition+1) MOD (WindowSize-1);
       IF lookAheadBytes # 0 THEN
         matchLength := AddString(currentPosition, matchPosition)
@@ -531,12 +531,12 @@ BEGIN
   ArcF := Files.Old(archive);
   archiveExists := (ArcF # NIL);
 
-IF ~archiveExists THEN
+  IF ~archiveExists THEN
     ArcF := Files.New(archive);
     IF ArcF = NIL THEN RETURN END;
     Files.Set(Ra, ArcF, 0);
     eofPos := 0;
-    addL := NIL; (* Initialize empty list *)
+    addL := NIL;
   ELSE
     (* Build list of existing files and find EOF position *)
     addL := NIL;
@@ -544,11 +544,6 @@ IF ~archiveExists THEN
     pos := 0;
     ReadHeader(Ra, h, err);
     WHILE (h.name # EOFName) & ~err DO
-      (* Debug output *)
-      Out.String("Found existing: "); Out.String(h.name); 
-      Out.String(" at pos "); Out.Int(pos, 0);
-      Out.String(" length "); Out.Int(h.length, 0); Out.Ln;
-      
       (* Add to existing files list *)
       ha := FileUtil.NewFileNode(h.name);
       ha.next := addL;
@@ -561,33 +556,21 @@ IF ~archiveExists THEN
     END;
 
     IF err THEN
-      Out.String("Error reading archive at position "); Out.Int(pos, 0); Out.Ln;
+      Out.String("Error reading archive"); Out.Ln;
       Files.Close(ArcF);
       RETURN;
     END;
 
     (* Remember EOF position - we'll write new entries here *)
     eofPos := pos;
-    Out.String("EOF position: "); Out.Int(eofPos, 0); Out.Ln;
   END;
 
   (* Position at EOF location to add new files *)
   Files.Set(Ra, ArcF, eofPos);
 
-(* Add new files *)
+  (* Add new files *)
   nl := files;
-  
-  (* Debug: print the file list *)
-  Out.String("Files to add:"); Out.Ln;
-  ha := nl;
-  WHILE ha # NIL DO
-    Out.String("  - "); Out.String(ha.name); Out.Ln;
-    ha := ha.next;
-  END;
-  
   WHILE nl # NIL DO
-    Out.String("Processing: "); Out.String(nl.name); Out.Ln;
-    
     (* Check for duplicates *)
     ha := addL;
     found := FALSE;
@@ -629,6 +612,7 @@ IF ~archiveExists THEN
           Compress(RF, Rtemp, len);
           Files.Close(AddF);
 
+          (* Register temp file to ensure all data is flushed *)
           Files.Register(tempFile);
 
           (* Write header with final values *)
@@ -638,14 +622,13 @@ IF ~archiveExists THEN
           IF len > 0 THEN
             h.ratio := 100.0 * Len / len;
           ELSE
-            h.ratio := 0.0;
+            h.ratio := 100.0;  (* Avoid zero ratio *)
           END;
           WriteHeader(Ra, h);
 
           (* Copy compressed data from temp to archive *)
           Files.Set(Rtemp, tempFile, 0);
           CopyFrom(Rtemp, Ra, Len);
-          Files.Register(tempFile);
           Files.Close(tempFile);
           Files.Delete(tempName, res);
 
@@ -664,14 +647,7 @@ IF ~archiveExists THEN
     nl := nl.next;
   END;
 
-  (* Always write EOF marker at current position *)
-  IF changed OR ~archiveExists THEN
-    h.name := EOFName;
-    h.length := 0;
-    h.ratio := 0.0;
-    h.extensions := {};
-    WriteHeader(Ra, h);
-  END;
+  (* Don't write EOF marker - archive ends at end of file *)
 
   Files.Register(ArcF);  (* Always register to save changes *)
   Files.Close(ArcF);
@@ -792,8 +768,8 @@ VAR
   found: BOOLEAN;
   deleted: BOOLEAN;
   tempName: ARRAY 256 OF CHAR;
-  newName: ARRAY 256 OF CHAR;
   res: INTEGER;
+  i: INTEGER;
 BEGIN
   ArcF := Files.Old(archive);
   IF ArcF = NIL THEN
@@ -802,10 +778,14 @@ BEGIN
   END;
 
   (* Create temp file with unique name *)
-  tempName := Temp;
-  Strings.Append(".delete", tempName);
+  COPY(Temp, tempName);
+  i := 0;
+  WHILE tempName[i] # 0X DO INC(i) END;
+  tempName[i] := '.'; tempName[i+1] := 'd'; tempName[i+2] := 'e';
+  tempName[i+3] := 'l'; tempName[i+4] := 0X;
+
   Files.Delete(tempName, res); (* Clean up any old temp file *)
-  
+
   TmpF := Files.New(tempName);
   IF TmpF = NIL THEN
     Out.String("Failed to create temporary file"); Out.Ln;
@@ -855,47 +835,25 @@ BEGIN
     RETURN;
   END;
 
-  (* Write EOF marker to temp file *)
-  h.name := EOFName;
-  h.length := 0;
-  h.ratio := 0.0;
-  h.extensions := {};
-  WriteHeader(Rt, h);
+  (* Don't write EOF marker - archive ends at end of file *)
 
-  (* Close both files *)
-  Files.Close(ArcF);
+  (* Close and save temp file *)
   Files.Register(TmpF);
   Files.Close(TmpF);
+  Files.Close(ArcF);
 
   IF deleted THEN
-    (* Create a new name for the archive *)
-    COPY(archive, newName);
-    Strings.Append(".new", newName);
-    
-    (* Rename temp to new name *)
-    res := 0;
-    Files.Rename(tempName, newName, res);
-    IF res # 0 THEN
-      Out.String("Error: could not rename temp file ("); 
-      Out.Int(res, 0); Out.String(")"); Out.Ln;
-      Files.Delete(tempName, res);
-      RETURN;
-    END;
-    
-    (* Delete original *)
+    (* Delete original and rename temp to original *)
     Files.Delete(archive, res);
     IF res # 0 THEN
-      Out.String("Warning: could not delete original (error "); 
-      Out.Int(res, 0); Out.String("), trying rename"); Out.Ln;
-    END;
-    
-    (* Rename new to original *)
-    Files.Rename(newName, archive, res);
-    IF res # 0 THEN
-      Out.String("Error: could not rename new file to original (");
+      Out.String("Warning: could not delete original archive (error ");
       Out.Int(res, 0); Out.String(")"); Out.Ln;
-      (* Try to recover *)
-      Files.Rename(newName, archive, res);
+    END;
+
+    Files.Rename(tempName, archive, res);
+    IF res # 0 THEN
+      Out.String("Error: could not rename temp file to archive (error ");
+      Out.Int(res, 0); Out.String(")"); Out.Ln;
     END;
   ELSE
     (* No files were deleted, remove temp file *)
