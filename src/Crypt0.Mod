@@ -1,9 +1,12 @@
 MODULE Crypt0;
-IMPORT Files, ArcTool;
+IMPORT Files;
 
 CONST
   idversion* = 'Crypt0 0.1d1 VOC';
   defaultseed = 871491;
+  (* Constants from ArcTool *)
+  Done = 0;
+  ErrorInArchive = 2;
 
 TYPE
   CryptProc* = PROCEDURE (VAR Rin: Files.Rider; nIn: LONGINT;
@@ -76,9 +79,9 @@ BEGIN
     INC(i)
   END;
   IF i = nIn THEN
-    res := 0  (* Done *)
+    res := Done
   ELSE
-    res := 2  (* ErrorInArchive *)
+    res := ErrorInArchive
   END
 END XORDecrypt;
 
@@ -97,9 +100,9 @@ BEGIN
     INC(i)
   END;
   IF i = nIn THEN
-    res := ArcTool.Done
+    res := Done
   ELSE
-    res := ArcTool.ErrorInArchive
+    res := ErrorInArchive
   END
 END XOREncrypt;
 

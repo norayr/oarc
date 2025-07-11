@@ -26,6 +26,9 @@ CONST
   ArchiveExists = 4;
   FileError = 5;
 
+ (* extension bits *)
+  encryption = 0;  (* bit 0 in extensions set means file is encrypted *)
+
 TYPE
   Node = RECORD
     parent, smallerChild, largerChild: INTEGER
