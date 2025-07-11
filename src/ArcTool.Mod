@@ -40,6 +40,11 @@ TYPE
   END;
   EnumProc = PROCEDURE (h: Header; VAR stop: BOOLEAN);
 
+  (* now crypt related type *)
+  CryptProc* = PROCEDURE (VAR Rin: Files.Rider; nIn: LONGINT;
+                          VAR Rout: Files.Rider; key: ARRAY OF CHAR;
+                          VAR res: INTEGER);
+
 VAR
   Buffer: ARRAY BufferSize OF CHAR;
   Window: ARRAY WindowSize+RawLookAheadSize+1 OF CHAR;
@@ -50,6 +55,31 @@ VAR
   Err: BOOLEAN;
   help: INTEGER;
 
+  (* and crypt related variables *)
+  Decrypt*, Encrypt*: CryptProc;
+  curKey: ARRAY 64 OF CHAR;
+
+
+(* and crypt related procedures *)
+
+PROCEDURE SetEncryption*(key: ARRAY OF CHAR);
+BEGIN
+  COPY(key, curKey)
+END SetEncryption;
+
+PROCEDURE SetDecryption*(key: ARRAY OF CHAR);
+BEGIN
+  COPY(key, curKey)
+END SetDecryption;
+
+PROCEDURE ClearEncryption*;
+BEGIN
+  curKey := "";
+  Decrypt := NIL;
+  Encrypt := NIL
+END ClearEncryption;
+
+(* tree procedures *)
 PROCEDURE InitTree(r: INTEGER);
 BEGIN
   Tree[TreeRoot].largerChild := r;
@@ -488,23 +518,44 @@ BEGIN
 END Expand;
 
 PROCEDURE Directory*(archive: ARRAY OF CHAR; detailed: BOOLEAN);
-VAR ArcF: Files.File; R: Files.Rider; h: Header; err: BOOLEAN;
+VAR
+  ArcF: Files.File;
+  R: Files.Rider;
+  h: Header;
+  err: BOOLEAN;
+  encryptedCount, totalCount: INTEGER;
 BEGIN
   ArcF := Files.Old(archive);
   IF ArcF # NIL THEN
+    encryptedCount := 0;
+    totalCount := 0;
     Files.Set(R, ArcF, 0);
     ReadHeader(R, h, err);
     WHILE (h.name # EOFName) & ~err DO
       Out.String(h.name);
+      IF encryption IN h.extensions THEN  (* Check encryption bit *)
+        Out.String(" [ENCRYPTED]");
+        INC(encryptedCount);
+      END;
       IF detailed THEN
         Out.String("  Size: "); Out.Int(h.length, 0);
         Out.String("  Ratio: "); Out.Real(h.ratio, 0); Out.String("%");
       END;
       Out.Ln;
+      INC(totalCount);
       Files.Set(R, ArcF, Files.Pos(R) + h.length);
       ReadHeader(R, h, err)
     END;
-    Files.Close(ArcF);  (* No Register needed - we didn't modify the file *)
+    Files.Close(ArcF);
+
+    IF encryptedCount > 0 THEN
+      Out.Ln;
+      Out.String("Note: "); Out.Int(encryptedCount, 0);
+      Out.String(" of "); Out.Int(totalCount, 0);
+      Out.String(" files are encrypted.");
+      Out.Ln;
+    END;
+
     IF err THEN Out.String(err1); Out.Ln END;
   ELSE
     Out.String(archive); Out.String(err2); Out.Ln;
@@ -513,19 +564,20 @@ END Directory;
 
 PROCEDURE Add*(archive: ARRAY OF CHAR; files: FileUtil.FileList);
 VAR
-  ArcF, AddF, tempFile: Files.File;
-  Ra, RF, Rtemp: Files.Rider;
+  ArcF, AddF, tempFile, tempFile2: Files.File;
+  Ra, RF, Rtemp, Rtemp2: Files.Rider;
   h: Header;
   nl: FileUtil.FileList;
-  len, pos, eofPos: LONGINT;
+  len, pos, eofPos, savePos, encLen: LONGINT;
   archiveExists: BOOLEAN;
   err: BOOLEAN;
   addL, ha: FileUtil.FileList;
   found: BOOLEAN;
   changed: BOOLEAN;
-  tempName: ARRAY 256 OF CHAR;
+  tempName, tempName2: ARRAY 256 OF CHAR;
   res: INTEGER;
   success: BOOLEAN;
+  i: INTEGER;
 BEGIN
   changed := FALSE;
   ArcF := Files.Old(archive);
@@ -618,36 +670,98 @@ BEGIN
           (* Write header with final values *)
           COPY(nl.name, h.name);
           h.extensions := {};
-          h.length := Len;
-          IF len > 0 THEN
-            h.ratio := 100.0 * Len / len;
-          ELSE
-            h.ratio := 100.0;  (* Avoid zero ratio *)
+
+          (* Set encryption bit if using encryption *)
+          IF (curKey # "") & (Encrypt # NIL) THEN
+            INCL(h.extensions, encryption);
           END;
-          WriteHeader(Ra, h);
 
-          (* Copy compressed data from temp to archive *)
-          Files.Set(Rtemp, tempFile, 0);
-          CopyFrom(Rtemp, Ra, Len);
-          Files.Close(tempFile);
-          Files.Delete(tempName, res);
+          (* Handle encryption if enabled *)
+          IF (curKey # "") & (Encrypt # NIL) & (encryption IN h.extensions) THEN
+            (* Create another temp file for encrypted data *)
+            COPY(tempName, tempName2);
+            i := 0;
+            WHILE tempName2[i] # 0X DO INC(i) END;
+            tempName2[i] := '2'; tempName2[i+1] := 0X;
 
-          Out.String("Added: "); Out.String(nl.name);
-          Out.String(" ("); Out.Int(Len, 0); Out.String(" bytes, ");
-          Out.Real(h.ratio, 2); Out.String("% ratio)"); Out.Ln;
-          changed := TRUE;
+            tempFile2 := Files.New(tempName2);
+            IF tempFile2 = NIL THEN
+              Out.String("Failed to create encryption temp file"); Out.Ln;
+              Files.Close(tempFile);
+              Files.Delete(tempName, res);
+              success := FALSE;
+            ELSE
+              Files.Set(Rtemp, tempFile, 0);
+              Files.Set(Rtemp2, tempFile2, 0);
 
-          (* Add to tracking list AFTER successful addition *)
-          ha := FileUtil.NewFileNode(nl.name);
-          ha.next := addL;
-          addL := ha;
+              (* Encrypt the compressed data *)
+              Encrypt(Rtemp, Len, Rtemp2, curKey, res);
+
+              IF res = Done THEN
+                Files.Register(tempFile2);
+                encLen := Files.Length(tempFile2);
+
+                (* Write header with encrypted length *)
+                h.length := encLen;
+                IF len > 0 THEN
+                  h.ratio := 100.0 * encLen / len;
+                ELSE
+                  h.ratio := 100.0;
+                END;
+                WriteHeader(Ra, h);
+
+                (* Copy encrypted data to archive *)
+                Files.Set(Rtemp2, tempFile2, 0);
+                CopyFrom(Rtemp2, Ra, encLen);
+
+                Files.Close(tempFile2);
+                Files.Delete(tempName2, res);
+
+                Out.String("Added (encrypted): "); Out.String(nl.name);
+                Out.String(" ("); Out.Int(encLen, 0); Out.String(" bytes, ");
+                Out.Real(h.ratio, 2); Out.String("% ratio)"); Out.Ln;
+              ELSE
+                Out.String("Encryption failed for: "); Out.String(nl.name); Out.Ln;
+                Files.Close(tempFile2);
+                Files.Delete(tempName2, res);
+                success := FALSE;
+              END;
+            END;
+
+            Files.Close(tempFile);
+            Files.Delete(tempName, res);
+          ELSE
+            (* No encryption - write header and copy compressed data directly *)
+            h.length := Len;
+            IF len > 0 THEN
+              h.ratio := 100.0 * Len / len;
+            ELSE
+              h.ratio := 100.0;
+            END;
+            WriteHeader(Ra, h);
+
+            Files.Set(Rtemp, tempFile, 0);
+            CopyFrom(Rtemp, Ra, Len);
+            Files.Close(tempFile);
+            Files.Delete(tempName, res);
+
+            Out.String("Added: "); Out.String(nl.name);
+            Out.String(" ("); Out.Int(Len, 0); Out.String(" bytes, ");
+            Out.Real(h.ratio, 2); Out.String("% ratio)"); Out.Ln;
+          END;
+
+          IF success THEN
+            changed := TRUE;
+            (* Add to tracking list AFTER successful addition *)
+            ha := FileUtil.NewFileNode(nl.name);
+            ha.next := addL;
+            addL := ha;
+          END;
         END;
       END;
     END;
     nl := nl.next;
   END;
-
-  (* Don't write EOF marker - archive ends at end of file *)
 
   Files.Register(ArcF);  (* Always register to save changes *)
   Files.Close(ArcF);
@@ -655,13 +769,14 @@ END Add;
 
 PROCEDURE Extract*(archive: ARRAY OF CHAR; files: FileUtil.FileList);
 VAR
-  ArcF, AddF: Files.File;
-  Ra, RF: Files.Rider;
+  ArcF, AddF, tempFile: Files.File;
+  Ra, RF, Rtemp: Files.Rider;
   h: Header;
   err: BOOLEAN;
   nl: FileUtil.FileList;
   found: BOOLEAN;
   pos: LONGINT;
+  res: INTEGER;
 BEGIN
   ArcF := Files.Old(archive);
   IF ArcF = NIL THEN
@@ -681,23 +796,81 @@ BEGIN
     WHILE (nl # NIL) & ~found DO
       IF h.name = nl.name THEN
         found := TRUE;
-        AddF := Files.New(nl.name);
-        IF AddF = NIL THEN
-          Out.String("Failed to create: "); Out.String(nl.name); Out.Ln;
+
+        (* Check for encryption *)
+        IF encryption IN h.extensions THEN
+          IF (curKey = "") OR (Decrypt = NIL) THEN
+            Out.String("Cannot extract encrypted file: ");
+            Out.String(nl.name);
+            Out.String(" (encryption key needed)"); Out.Ln;
+          ELSE
+            (* Decrypt then expand *)
+            AddF := Files.New(nl.name);
+            IF AddF = NIL THEN
+              Out.String("Failed to create: "); Out.String(nl.name); Out.Ln;
+            ELSE
+              (* Create temp file for decrypted data *)
+              tempFile := Files.New("");
+              IF tempFile # NIL THEN
+                Files.Set(Rtemp, tempFile, 0);
+
+                (* Decrypt from archive to temp file *)
+                Decrypt(Ra, h.length, Rtemp, curKey, res);
+
+                IF res = Done THEN
+                  Files.Register(tempFile);
+                  Files.Set(RF, AddF, 0);
+
+                  (* Initialize expansion state *)
+                  Len := 0;
+                  BufferPtr := BufferSize;
+                  CurBitNr := 7;
+                  CurByte := 0;
+                  maxLen := Files.Length(tempFile);
+
+                  (* Expand from temp file to output *)
+                  Files.Set(Rtemp, tempFile, 0);
+                  Expand(Rtemp, RF);
+
+                  Files.Register(AddF);
+                  Files.Close(AddF);
+                  Files.Close(tempFile);
+
+                  Out.String("Extracted (decrypted): ");
+                  Out.String(nl.name); Out.Ln;
+                ELSE
+                  Out.String("Decryption failed for: ");
+                  Out.String(nl.name);
+                  Out.String(" (wrong key?)"); Out.Ln;
+                  Files.Close(AddF);
+                  Files.Close(tempFile);
+                END;
+              ELSE
+                Out.String("Failed to create temp file for decryption"); Out.Ln;
+                Files.Close(AddF);
+              END;
+            END;
+          END;
         ELSE
-          Files.Set(RF, AddF, 0);
+          (* Not encrypted - normal extraction *)
+          AddF := Files.New(nl.name);
+          IF AddF = NIL THEN
+            Out.String("Failed to create: "); Out.String(nl.name); Out.Ln;
+          ELSE
+            Files.Set(RF, AddF, 0);
 
-          (* Initialize expansion state *)
-          Len := 0;
-          BufferPtr := BufferSize;
-          CurBitNr := 7;
-          CurByte := 0;
-          maxLen := h.length;
+            (* Initialize expansion state *)
+            Len := 0;
+            BufferPtr := BufferSize;
+            CurBitNr := 7;
+            CurByte := 0;
+            maxLen := h.length;
 
-          Expand(Ra, RF);
-          Files.Register(AddF);  (* Register before close! *)
-          Files.Close(AddF);
-          Out.String("Extracted: "); Out.String(nl.name); Out.Ln;
+            Expand(Ra, RF);
+            Files.Register(AddF);
+            Files.Close(AddF);
+            Out.String("Extracted: "); Out.String(nl.name); Out.Ln;
+          END;
         END;
       END;
       nl := nl.next;
@@ -707,17 +880,19 @@ BEGIN
     Files.Set(Ra, ArcF, pos + h.length);
     ReadHeader(Ra, h, err);
   END;
-  (* Don't need to Register ArcF since we only read from it *)
+
   Files.Close(ArcF);
 END Extract;
 
 PROCEDURE ExtractAll*(archive: ARRAY OF CHAR);
 VAR
-  ArcF, AddF: Files.File;
-  Ra, RF: Files.Rider;
+  ArcF, AddF, tempFile: Files.File;
+  Ra, RF, Rtemp: Files.Rider;
   h: Header;
   err: BOOLEAN;
   pos: LONGINT;
+  res: INTEGER;
+  skippedCount: INTEGER;
 BEGIN
   ArcF := Files.Old(archive);
   IF ArcF = NIL THEN
@@ -725,28 +900,90 @@ BEGIN
     RETURN;
   END;
 
+  skippedCount := 0;
   Files.Set(Ra, ArcF, 0);
   ReadHeader(Ra, h, err);
 
   WHILE (h.name # EOFName) & ~err DO
     pos := Files.Pos(Ra);
-    AddF := Files.New(h.name);
-    IF AddF = NIL THEN
-      Out.String("Failed to create: "); Out.String(h.name); Out.Ln;
+
+    (* Check for encryption *)
+    IF encryption IN h.extensions THEN
+      IF (curKey = "") OR (Decrypt = NIL) THEN
+        Out.String("Skipping encrypted file: ");
+        Out.String(h.name);
+        Out.String(" (encryption key needed)"); Out.Ln;
+        INC(skippedCount);
+      ELSE
+        (* Decrypt then expand *)
+        AddF := Files.New(h.name);
+        IF AddF = NIL THEN
+          Out.String("Failed to create: "); Out.String(h.name); Out.Ln;
+        ELSE
+          (* Create temp file for decrypted data *)
+          tempFile := Files.New("");
+          IF tempFile # NIL THEN
+            Files.Set(Rtemp, tempFile, 0);
+
+            (* Decrypt from archive to temp file *)
+            Decrypt(Ra, h.length, Rtemp, curKey, res);
+
+            IF res = Done THEN
+              Files.Register(tempFile);
+              Files.Set(RF, AddF, 0);
+
+              (* Initialize expansion state *)
+              Len := 0;
+              BufferPtr := BufferSize;
+              CurBitNr := 7;
+              CurByte := 0;
+              maxLen := Files.Length(tempFile);
+
+              (* Expand from temp file to output *)
+              Files.Set(Rtemp, tempFile, 0);
+              Expand(Rtemp, RF);
+
+              Files.Register(AddF);
+              Files.Close(AddF);
+              Files.Close(tempFile);
+
+              Out.String("Extracted (decrypted): ");
+              Out.String(h.name); Out.Ln;
+            ELSE
+              Out.String("Decryption failed for: ");
+              Out.String(h.name);
+              Out.String(" (wrong key?)"); Out.Ln;
+              Files.Close(AddF);
+              Files.Close(tempFile);
+              INC(skippedCount);
+            END;
+          ELSE
+            Out.String("Failed to create temp file for decryption"); Out.Ln;
+            Files.Close(AddF);
+            INC(skippedCount);
+          END;
+        END;
+      END;
     ELSE
-      Files.Set(RF, AddF, 0);
+      (* Not encrypted - normal extraction *)
+      AddF := Files.New(h.name);
+      IF AddF = NIL THEN
+        Out.String("Failed to create: "); Out.String(h.name); Out.Ln;
+      ELSE
+        Files.Set(RF, AddF, 0);
 
-      (* Initialize expansion state *)
-      Len := 0;
-      BufferPtr := BufferSize;
-      CurBitNr := 7;
-      CurByte := 0;
-      maxLen := h.length;
+        (* Initialize expansion state *)
+        Len := 0;
+        BufferPtr := BufferSize;
+        CurBitNr := 7;
+        CurByte := 0;
+        maxLen := h.length;
 
-      Expand(Ra, RF);
-      Files.Register(AddF);  (* Register before close! *)
-      Files.Close(AddF);
-      Out.String("Extracted: "); Out.String(h.name); Out.Ln;
+        Expand(Ra, RF);
+        Files.Register(AddF);
+        Files.Close(AddF);
+        Out.String("Extracted: "); Out.String(h.name); Out.Ln;
+      END;
     END;
 
     (* Move to next entry *)
@@ -754,7 +991,19 @@ BEGIN
     ReadHeader(Ra, h, err);
   END;
 
-  Files.Close(ArcF);  (* No Register needed - we only read from it *)
+  Files.Close(ArcF);
+
+  IF skippedCount > 0 THEN
+    Out.Ln;
+    Out.String("Note: Skipped "); Out.Int(skippedCount, 0);
+    Out.String(" file(s). ");
+    IF (curKey = "") OR (Decrypt = NIL) THEN
+      Out.String("Encryption key required for extraction.");
+    ELSE
+      Out.String("Decryption failed (wrong key?).");
+    END;
+    Out.Ln;
+  END;
 END ExtractAll;
 
 PROCEDURE Delete*(archive: ARRAY OF CHAR; files: FileUtil.FileList);

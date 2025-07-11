@@ -46,6 +46,7 @@ build_deps:
 buildThis:
 	cd $(BUILD) && $(VOC) -s $(mkfile_dir_path)/src/FileUtil.Mod
 	cd $(BUILD) && $(VOC) -s $(mkfile_dir_path)/src/ArcTool.Mod
+	cd $(BUILD) && $(VOC) -s $(mkfile_dir_path)/src/Crypt0.Mod
 	cd $(BUILD) && $(VOC) -m $(mkfile_dir_path)/src/oarc.Mod
 
 tests:
