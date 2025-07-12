@@ -1113,4 +1113,7 @@ BEGIN
 END Delete;
 
 BEGIN
+  curKey := "";
+  Decrypt := NIL;
+  Encrypt := NIL;
 END ArcTool.

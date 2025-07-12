@@ -117,7 +117,10 @@ BEGIN
     
     (* Set up encryption if requested *)
     IF encrypted THEN
-      Crypt0.Key();  (* Install encryption handlers *)
+      Crypt0.Key();  (* Initialize Crypt0 module *)
+      (* Now pass the procedures to ArcTool *)
+      ArcTool.Encrypt := Crypt0.XOREncrypt;
+      ArcTool.Decrypt := Crypt0.XORDecrypt;
       ArcTool.SetEncryption(encryptKey);
     END;
     
@@ -156,7 +159,10 @@ BEGIN
     
     (* Set up decryption if requested *)
     IF encrypted THEN
-      Crypt0.Key();  (* Install decryption handlers *)
+      Crypt0.Key();  (* Initialize Crypt0 module *)
+      (* Now pass the procedures to ArcTool *)
+      ArcTool.Encrypt := Crypt0.XOREncrypt;
+      ArcTool.Decrypt := Crypt0.XORDecrypt;
       ArcTool.SetDecryption(encryptKey);
     END;
     
@@ -185,7 +191,10 @@ BEGIN
     
     (* Set up decryption if requested *)
     IF encrypted THEN
-      Crypt0.Key();  (* Install decryption handlers *)
+      Crypt0.Key();  (* Initialize Crypt0 module *)
+      (* Now pass the procedures to ArcTool *)
+      ArcTool.Encrypt := Crypt0.XOREncrypt;
+      ArcTool.Decrypt := Crypt0.XORDecrypt;
       ArcTool.SetDecryption(encryptKey);
     END;
     
