@@ -55,7 +55,8 @@ END GetSeed;
   
 PROCEDURE NextKey(key: ARRAY OF CHAR): LONGINT;   
 BEGIN
-  curkey := (curkey + 1) MOD keylen; 
+  INC(curkey);
+  IF curkey >= keylen THEN curkey := 0 END;  (* Wrap around *)
   RETURN ParksMiller(seed, key[curkey])
 END NextKey; 
 
