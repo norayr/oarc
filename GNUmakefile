@@ -50,7 +50,7 @@ buildThis:
 	cd $(BUILD) && $(VOC) -m $(mkfile_dir_path)/src/oarc.Mod
 
 tests:
-	cd $(BUILD) && $(VOC) $(mkfile_dir_path)/test/Demo.Mod -m
+	cd $(BUILD) && $(VOC) $(mkfile_dir_path)/test/TestEncryption.Mod -m
 	#build/testList
 
 clean:

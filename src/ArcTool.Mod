@@ -44,9 +44,12 @@ TYPE
   EnumProc = PROCEDURE (h: Header; VAR stop: BOOLEAN);
 
   (* now crypt related type *)
+
   CryptProc* = PROCEDURE (VAR Rin: Files.Rider; nIn: LONGINT;
                           VAR Rout: Files.Rider; key: ARRAY OF CHAR;
                           VAR res: INTEGER);
+
+  (*CryptProc* = Crypt0.CryptProc;*)
 
 VAR
   Buffer: ARRAY BufferSize OF CHAR;

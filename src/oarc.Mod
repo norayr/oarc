@@ -117,10 +117,10 @@ BEGIN
     
     (* Set up encryption if requested *)
     IF encrypted THEN
-      Crypt0.Key();  (* Initialize Crypt0 module *)
-      (* Now pass the procedures to ArcTool *)
-      ArcTool.Encrypt := Crypt0.XOREncrypt;
-      ArcTool.Decrypt := Crypt0.XORDecrypt;
+      Crypt0.Key();  (* Install encryption handlers - this sets Crypt0.Encrypt and Crypt0.Decrypt *)
+      (* Now they should be initialized, so we can copy them *)
+      ArcTool.Encrypt := Crypt0.Encrypt;
+      ArcTool.Decrypt := Crypt0.Decrypt;
       ArcTool.SetEncryption(encryptKey);
     END;
     
