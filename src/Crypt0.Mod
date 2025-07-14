@@ -56,7 +56,7 @@ BEGIN
     DEC(n)
   END;
 END GetSeed;
-
+(*
 PROCEDURE NextKey(key: ARRAY OF CHAR): LONGINT;
 BEGIN
   IF keylen > 0 THEN
@@ -66,7 +66,13 @@ BEGIN
   END;
   RETURN ParksMiller(seed, key[curkey])
 END NextKey;
+*)
 
+PROCEDURE NextKey(key: ARRAY OF CHAR): LONGINT;
+BEGIN
+  curkey := (curkey + 1) MOD keylen;   (* Will crash if keylen=0 *)
+  RETURN ParksMiller(seed, key[curkey])
+END NextKey;
 (* Original Crypt0 encryption - modular addition *)
 PROCEDURE ModDecrypt(VAR Rin: Files.Rider; nIn: LONGINT;
                      VAR Rout: Files.Rider; key: ARRAY OF CHAR;
