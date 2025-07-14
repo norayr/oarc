@@ -51,6 +51,8 @@ buildThis:
 
 tests:
 	cd $(BUILD) && $(VOC) $(mkfile_dir_path)/test/TestEncryption.Mod -m
+	cd $(BUILD) && $(VOC) $(mkfile_dir_path)/test/TestCrypt.Mod -m
+	cd $(BUILD) && $(VOC) $(mkfile_dir_path)/test/TestCompressEncrypt.Mod -m
 	#build/testList
 
 clean:

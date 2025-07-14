@@ -2,7 +2,7 @@ MODULE ArcTool;
 IMPORT Files, FileUtil, Out, Platform, Strings, SYSTEM;
 
 CONST
-  BufferSize = 4096;
+  BufferSize- = 4096;
   IndexBitCount = 12;
   LengthBitCount = 4;
   WindowSize = 4096;
@@ -55,8 +55,8 @@ VAR
   Buffer: ARRAY BufferSize OF CHAR;
   Window: ARRAY WindowSize+RawLookAheadSize+1 OF CHAR;
   Tree: ARRAY WindowSize+1 OF Node;
-  CurBitNr, Len, maxLen: LONGINT;
-  CurByte: LONGINT;
+  CurBitNr-, Len-, maxLen-: LONGINT;
+  CurByte-: LONGINT;
   BufferPtr: LONGINT;
   Err: BOOLEAN;
   help: INTEGER;
@@ -67,6 +67,31 @@ VAR
 
 
 (* and crypt related procedures *)
+
+PROCEDURE SetLen*(l: LONGINT);
+BEGIN
+  Len := l
+END SetLen;
+
+PROCEDURE SetMaxLen*(l: LONGINT);
+BEGIN
+  maxLen := l
+END SetMaxLen;
+
+PROCEDURE SetBufferPtr*(l: LONGINT);
+BEGIN
+  BufferPtr := l
+END SetBufferPtr;
+
+PROCEDURE SetCurBitNr*(l: LONGINT);
+BEGIN
+  CurBitNr := l
+END SetCurBitNr;
+
+PROCEDURE SetCurByte*(l: LONGINT);
+BEGIN
+  CurByte := l;
+END SetCurByte;
 
 PROCEDURE SetEncryption*(key: ARRAY OF CHAR);
 BEGIN
@@ -316,7 +341,7 @@ BEGIN
   RETURN h
 END InputBit;
 
-PROCEDURE FlushBits(VAR R: Files.Rider);
+PROCEDURE FlushBits*(VAR R: Files.Rider);
 BEGIN
   IF CurBitNr # 7 THEN
     Buffer[BufferPtr] := CHR(CurByte);
@@ -401,7 +426,7 @@ BEGIN
   END
 END OutputBits;
 
-PROCEDURE Compress(VAR Input, Output: Files.Rider; maxbytes: LONGINT);
+PROCEDURE Compress*(VAR Input, Output: Files.Rider; maxbytes: LONGINT);
 VAR
   i, lookAheadBytes, currentPosition, replaceCount, matchLength, matchPosition: INTEGER;
   ch: CHAR;
@@ -482,7 +507,7 @@ BEGIN
   FlushBits(Output);
 END Compress;
 
-PROCEDURE Expand(VAR Input, Output: Files.Rider);
+PROCEDURE Expand*(VAR Input, Output: Files.Rider);
 VAR
   i, currentPosition: INTEGER;
   matchLength, matchPosition: INTEGER;
