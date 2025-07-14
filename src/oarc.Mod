@@ -54,15 +54,15 @@ BEGIN
     ShowHelp;
     RETURN;
   END;
-  
+
   (* Initialize *)
   encrypted := FALSE;
   encryptKey := "";
-  
+
   (* Get the command *)
   Args.Get(1, cmd);
   i := 2;
-  
+
   IF cmd = "list" THEN
     (* Get archive name *)
     IF i > argCount THEN
@@ -71,7 +71,7 @@ BEGIN
     END;
     Args.Get(i, archive);
     INC(i);
-    
+
     (* Handle options *)
     detailed := FALSE;
     IF i < argCount THEN
@@ -81,9 +81,9 @@ BEGIN
         INC(i);
       END;
     END;
-    
+
     ArcTool.Directory(archive, detailed);
-    
+
   ELSIF cmd = "add" THEN
     (* Get archive name *)
     IF i > argCount THEN
@@ -92,10 +92,10 @@ BEGIN
     END;
     Args.Get(i, archive);
     INC(i);
-    
+
     (* Check for encryption option *)
     encrypted := ParseEncryptionOption(i);
-    
+
     (* Get file list *)
     files := NIL;
     WHILE i < argCount DO
@@ -109,12 +109,12 @@ BEGIN
       END;
       INC(i);
     END;
-    
+
     IF files = NIL THEN
       Out.String("Error: no files specified"); Out.Ln;
       RETURN;
     END;
-    
+
     (* Set up encryption if requested *)
     IF encrypted THEN
       Crypt0.Key();  (* Install encryption handlers - this sets Crypt0.Encrypt and Crypt0.Decrypt *)
@@ -123,14 +123,14 @@ BEGIN
       ArcTool.Decrypt := Crypt0.Decrypt;
       ArcTool.SetEncryption(encryptKey);
     END;
-    
+
     ArcTool.Add(archive, files);
-    
+
     (* Clear encryption *)
     IF encrypted THEN
       ArcTool.ClearEncryption();
     END;
-    
+
   ELSIF cmd = "extract" THEN
     (* Get archive name *)
     IF i > argCount THEN
@@ -139,10 +139,10 @@ BEGIN
     END;
     Args.Get(i, archive);
     INC(i);
-    
+
     (* Check for encryption option *)
     encrypted := ParseEncryptionOption(i);
-    
+
     (* Get file list *)
     files := NIL;
     WHILE i < argCount DO
@@ -156,27 +156,27 @@ BEGIN
       END;
       INC(i);
     END;
-    
+
     (* Set up decryption if requested *)
     IF encrypted THEN
       Crypt0.Key();  (* Initialize Crypt0 module *)
       (* Now pass the procedures to ArcTool *)
-      ArcTool.Encrypt := Crypt0.XOREncrypt;
-      ArcTool.Decrypt := Crypt0.XORDecrypt;
+      ArcTool.Encrypt := Crypt0.Encrypt;
+      ArcTool.Decrypt := Crypt0.Decrypt;
       ArcTool.SetDecryption(encryptKey);
     END;
-    
+
     IF files = NIL THEN
       ArcTool.ExtractAll(archive)
     ELSE
       ArcTool.Extract(archive, files)
     END;
-    
+
     (* Clear decryption *)
     IF encrypted THEN
       ArcTool.ClearEncryption();
     END;
-    
+
   ELSIF cmd = "extractall" THEN
     (* Get archive name *)
     IF i > argCount THEN
@@ -185,26 +185,26 @@ BEGIN
     END;
     Args.Get(i, archive);
     INC(i);
-    
+
     (* Check for encryption option *)
     encrypted := ParseEncryptionOption(i);
-    
+
     (* Set up decryption if requested *)
     IF encrypted THEN
       Crypt0.Key();  (* Initialize Crypt0 module *)
       (* Now pass the procedures to ArcTool *)
-      ArcTool.Encrypt := Crypt0.XOREncrypt;
-      ArcTool.Decrypt := Crypt0.XORDecrypt;
+      ArcTool.Encrypt := Crypt0.Encrypt;
+      ArcTool.Decrypt := Crypt0.Decrypt;
       ArcTool.SetDecryption(encryptKey);
     END;
-    
+
     ArcTool.ExtractAll(archive);
-    
+
     (* Clear decryption *)
     IF encrypted THEN
       ArcTool.ClearEncryption();
     END;
-    
+
   ELSIF cmd = "delete" THEN
     (* Get archive name *)
     IF i > argCount THEN
@@ -213,7 +213,7 @@ BEGIN
     END;
     Args.Get(i, archive);
     INC(i);
-    
+
     (* Get file list *)
     files := NIL;
     WHILE i < argCount DO
@@ -227,14 +227,14 @@ BEGIN
       END;
       INC(i);
     END;
-    
+
     IF files = NIL THEN
       Out.String("Error: no files specified"); Out.Ln;
       RETURN;
     END;
-    
+
     ArcTool.Delete(archive, files);
-    
+
   ELSE
     Out.String("Unknown command: "); Out.String(cmd); Out.Ln;
     ShowHelp;
