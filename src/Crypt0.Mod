@@ -1,5 +1,5 @@
 MODULE Crypt0;
-IMPORT Files, SYSTEM, ArcTool;  (* Import ArcTool to use its CryptProc type *)
+IMPORT Files, Out, ArcTool;  (* Import ArcTool to use its CryptProc type *)
 
 CONST
   idversion* = 'Crypt0 0.1d1 VOC';
@@ -56,7 +56,7 @@ BEGIN
     DEC(n)
   END;
 END GetSeed;
-(*
+
 PROCEDURE NextKey(key: ARRAY OF CHAR): LONGINT;
 BEGIN
   IF keylen > 0 THEN
@@ -66,13 +66,23 @@ BEGIN
   END;
   RETURN ParksMiller(seed, key[curkey])
 END NextKey;
-*)
 
-PROCEDURE NextKey(key: ARRAY OF CHAR): LONGINT;
+PROCEDURE NextKeyVoyager(key: ARRAY OF CHAR): LONGINT;
 BEGIN
-  curkey := (curkey + 1) MOD keylen;   (* Will crash if keylen=0 *)
-  RETURN ParksMiller(seed, key[curkey])
-END NextKey;
+  IF keylen = 0 THEN
+    Out.String("ERROR: Division by zero in Voyager/Heidelberg cipher!"); Out.Ln;
+    Out.String("This cipher has a bug: it uses Length(key)-1 as the modulo divisor."); Out.Ln;
+    Out.String("With a 1-character key, this becomes 0, causing division by zero."); Out.Ln;
+    Out.String("This replicates the original bug from:"); Out.Ln;
+    Out.String("http://statlab.uni-heidelberg.de/projects/voyager/"); Out.Ln;
+    Out.String("Use a key with 2 or more characters, or use a different cipher."); Out.Ln;
+    HALT(1);
+  ELSE
+    curkey := (curkey + 1) MOD keylen;   (* Original bug: crashes if key length is 1 *)
+    RETURN ParksMiller(seed, key[curkey])
+  END
+END NextKeyVoyager;
+
 (* Original Crypt0 encryption - modular addition *)
 PROCEDURE ModDecrypt(VAR Rin: Files.Rider; nIn: LONGINT;
                      VAR Rout: Files.Rider; key: ARRAY OF CHAR;
@@ -119,6 +129,54 @@ BEGIN
     res := ErrorInArchive
   END
 END ModEncrypt;
+
+PROCEDURE ModDecryptVoyager(VAR Rin: Files.Rider; nIn: LONGINT;
+                     VAR Rout: Files.Rider; key: ARRAY OF CHAR;
+                     VAR res: INTEGER);
+VAR
+  i, ks: LONGINT;
+  ch: CHAR;
+BEGIN
+  GetSeed(key);
+  i := 0;
+  WHILE ~Rin.eof & (i < nIn) DO
+    Files.Read(Rin, ch);
+    ks := NextKeyVoyager(key) MOD 256;
+    (* Modular subtraction for decryption - ensure positive result *)
+    Files.Write(Rout, CHR((ORD(ch) - ks + 256) MOD 256));
+    INC(i)
+  END;
+  IF i = nIn THEN
+    res := Done
+  ELSE
+    res := ErrorInArchive
+  END
+END ModDecryptVoyager;
+
+PROCEDURE ModEncryptVoyager(VAR Rin: Files.Rider; nIn: LONGINT;
+                     VAR Rout: Files.Rider; key: ARRAY OF CHAR;
+                     VAR res: INTEGER);
+VAR
+  i, ks: LONGINT;
+  ch: CHAR;
+BEGIN
+  GetSeed(key);
+  i := 0;
+  WHILE ~Rin.eof & (i < nIn) DO
+    Files.Read(Rin, ch);
+    ks := NextKeyVoyager(key) MOD 256;
+    (* Modular addition for encryption *)
+    Files.Write(Rout, CHR((ORD(ch) + ks) MOD 256));
+    INC(i)
+  END;
+  IF i = nIn THEN
+    res := Done
+  ELSE
+    res := ErrorInArchive
+  END
+END ModEncryptVoyager;
+
+
 
 (* XOR variant for future use *)
 PROCEDURE XORDecrypt*(VAR Rin: Files.Rider; nIn: LONGINT;
@@ -174,12 +232,81 @@ BEGIN
   XORDecrypt(Rin, nIn, Rout, key, res)
 END XOREncrypt;
 
+(* S3 encryption from ETH Oberon System 3 *)
+(* Note: This is a simple substitution cipher, not cryptographically secure *)
+PROCEDURE S3Encrypt*(VAR Rin: Files.Rider; nIn: LONGINT;
+                     VAR Rout: Files.Rider; key: ARRAY OF CHAR;
+                     VAR res: INTEGER);
+VAR
+  i, n: LONGINT;
+  ch: CHAR;
+BEGIN
+  n := Length(key);
+  IF n = 0 THEN n := 1 END; (* Avoid division by zero *)
+  i := 0;
+  WHILE ~Rin.eof & (i < nIn) DO
+    Files.Read(Rin, ch);
+    (* Add key character for encryption *)
+    Files.Write(Rout, CHR((ORD(ch) + ORD(key[i MOD n])) MOD 256));
+    INC(i)
+  END;
+  IF i = nIn THEN
+    res := Done
+  ELSE
+    res := ErrorInArchive
+  END
+END S3Encrypt;
+
+PROCEDURE S3Decrypt*(VAR Rin: Files.Rider; nIn: LONGINT;
+                     VAR Rout: Files.Rider; key: ARRAY OF CHAR;
+                     VAR res: INTEGER);
+VAR
+  i, n: LONGINT;
+  ch: CHAR;
+BEGIN
+  n := Length(key);
+  IF n = 0 THEN n := 1 END; (* Avoid division by zero *)
+  i := 0;
+  WHILE ~Rin.eof & (i < nIn) DO
+    Files.Read(Rin, ch);
+    (* Subtract key character for decryption, handle negative values *)
+    Files.Write(Rout, CHR((ORD(ch) - ORD(key[i MOD n]) + 256) MOD 256));
+    INC(i)
+  END;
+  IF i = nIn THEN
+    res := Done
+  ELSE
+    res := ErrorInArchive
+  END
+END S3Decrypt;
+
 PROCEDURE Key*;
 BEGIN
   (* Install the modular addition/subtraction handlers by default *)
   Decrypt := ModDecrypt;
   Encrypt := ModEncrypt
 END Key;
+
+PROCEDURE SetCipher*(cipher: ARRAY OF CHAR);
+BEGIN
+  IF cipher = "mod" THEN
+    Decrypt := ModDecrypt;
+    Encrypt := ModEncrypt;
+  ELSIF cipher = "heidelberg" THEN
+    Decrypt := ModDecryptVoyager;  (* replicates bug found in Crypt0.Mod from https://web.archive.org/web/20140314210953/http://statlab.uni-heidelberg.de/projects/voyager/ *)
+    Encrypt := ModEncryptVoyager;
+  ELSIF cipher = "xor" THEN
+    Decrypt := XORDecrypt;
+    Encrypt := XOREncrypt;
+  ELSIF cipher = "s3" THEN
+    Decrypt := S3Decrypt;
+    Encrypt := S3Encrypt;
+  ELSE
+    (* Fallback to default mod encryption *)
+    Decrypt := ModDecrypt;
+    Encrypt := ModEncrypt;
+  END;
+END SetCipher;
 
 BEGIN
   (* Initialize module *)

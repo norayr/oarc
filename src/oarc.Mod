@@ -11,53 +11,108 @@ VAR
   detailed: BOOLEAN;
   encrypted: BOOLEAN;
   encryptKey: ARRAY 64 OF CHAR;
+  cipherType: ARRAY 64 OF CHAR;
 
 PROCEDURE ShowHelp;
 BEGIN
   Out.String("Oberon Arc Utility"); Out.Ln;
   Out.String("Commands:"); Out.Ln;
-  Out.String("  list <archive> [-d]              List archive contents"); Out.Ln;
-  Out.String("  add <archive> [-e key] <files>   Add files (optionally encrypted)"); Out.Ln;
-  Out.String("  extract <archive> [-e key] [files] Extract files"); Out.Ln;
-  Out.String("  extractall <archive> [-e key]    Extract all files"); Out.Ln;
-  Out.String("  delete <archive> <files>         Delete files from archive"); Out.Ln;
+  Out.String("  list <archive> [-d]                              List archive contents"); Out.Ln;
+  Out.String("  add <archive> [-c cipher] [-e key] <files>       Add files (optionally encrypted)"); Out.Ln;
+  Out.String("  extract <archive> [-c cipher] [-e key] [files]   Extract files"); Out.Ln;
+  Out.String("  extractall <archive> [-c cipher] [-e key]        Extract all files"); Out.Ln;
+  Out.String("  delete <archive> <files>                         Delete files from archive"); Out.Ln;
   Out.Ln;
   Out.String("Options:"); Out.Ln;
-  Out.String("  -d        Show detailed information (list command)"); Out.Ln;
-  Out.String("  -e key    Use encryption with specified key"); Out.Ln;
+  Out.String("  -d          Show detailed information (list command)"); Out.Ln;
+  Out.String("  -c cipher   Select encryption cipher (default: mod)"); Out.Ln;
+  Out.String("  -e key      Enable encryption with specified key"); Out.Ln;
   Out.Ln;
+  Out.String("Available ciphers:"); Out.Ln;
+  Out.String("  mod         Parks-Miller PRNG with modular arithmetic (default)"); Out.Ln;
+  Out.String("              - Uses: ciphertext = (plaintext + keystream) MOD 256"); Out.Ln;
+  Out.String("  heidelberg  Voyager project cipher (has a bug with 1-char keys!)"); Out.Ln;
+  Out.String("              - Same as 'mod' but with keylen = Length(key)-1"); Out.Ln;
+  Out.String("              - WARNING: Crashes with single-character passwords"); Out.Ln;
+  Out.String("              - Use only for compatibility with Voyager archives"); Out.Ln;
+  Out.String("  xor         XOR stream cipher"); Out.Ln;
+  Out.String("              - Uses: ciphertext = plaintext XOR keystream"); Out.Ln;
+  Out.String("  s3          Simple key-based cipher from ETH Oberon System 3"); Out.Ln;
+  Out.String("              - Uses: ciphertext = plaintext +/- key[i MOD keylen]"); Out.Ln;
+  Out.Ln;
+  Out.String("Examples:"); Out.Ln;
+  Out.String("  oarc add archive.arc -e mypassword file1.txt file2.txt"); Out.Ln;
+  Out.String("  oarc extract archive.arc -c heidelberg -e oldkey file1.txt"); Out.Ln;
 END ShowHelp;
 
-PROCEDURE ParseEncryptionOption(VAR i: INTEGER): BOOLEAN;
-(* Returns TRUE if encryption option found and parsed *)
+PROCEDURE ParseOptions(VAR i: INTEGER);
+(* Parse options for commands that support encryption *)
 BEGIN
-  IF (i < argCount) THEN
+  WHILE i < argCount DO
     Args.Get(i, arg);
-    IF arg = "-e" THEN
-      INC(i);
-      IF i < argCount THEN
-        Args.Get(i, encryptKey);
+    IF arg[0] = '-' THEN (* Only process options starting with '-' *)
+      IF arg = "-c" THEN
         INC(i);
-        RETURN TRUE;
+        IF i < argCount THEN
+          Args.Get(i, cipherType);
+          INC(i);
+        ELSE
+          Out.String("Error: -c option requires a cipher name"); Out.Ln;
+          HALT(1);
+        END;
+      ELSIF arg = "-e" THEN
+        encrypted := TRUE;
+        INC(i);
+        IF i < argCount THEN
+          Args.Get(i, encryptKey);
+          INC(i);
+        ELSE
+          Out.String("Error: -e option requires a key"); Out.Ln;
+          HALT(1);
+        END;
+      ELSIF arg = "-d" THEN
+        detailed := TRUE;
+        INC(i);
       ELSE
-        Out.String("Error: -e option requires a key"); Out.Ln;
+        Out.String("Unknown option: "); Out.String(arg); Out.Ln;
         HALT(1);
       END;
+    ELSE (* Non-option argument found, stop processing options *)
+      RETURN
     END;
   END;
-  RETURN FALSE;
-END ParseEncryptionOption;
+END ParseOptions;
+
+PROCEDURE SetupEncryption;
+BEGIN
+  IF encrypted THEN
+    Crypt0.Key();  (* Initialize basic encryption *)
+    Crypt0.SetCipher(cipherType); (* Select cipher algorithm *)
+
+    (* Pass the procedures to ArcTool *)
+    ArcTool.Encrypt := Crypt0.Encrypt;
+    ArcTool.Decrypt := Crypt0.Decrypt;
+
+    (* Set the encryption key *)
+    ArcTool.SetEncryption(encryptKey);
+
+    Out.String("Using cipher: "); Out.String(cipherType);
+    Out.String(" with key: "); Out.String(encryptKey); Out.Ln;
+  END;
+END SetupEncryption;
 
 BEGIN
+  (* Initialize defaults *)
+  cipherType := "mod"; (* Default cipher *)
+  encrypted := FALSE;
+  detailed := FALSE;
+  encryptKey := "";
+
   argCount := Modules.ArgCount;
   IF argCount < 2 THEN
     ShowHelp;
     RETURN;
   END;
-
-  (* Initialize *)
-  encrypted := FALSE;
-  encryptKey := "";
 
   (* Get the command *)
   Args.Get(1, cmd);
@@ -73,15 +128,7 @@ BEGIN
     INC(i);
 
     (* Handle options *)
-    detailed := FALSE;
-    IF i < argCount THEN
-      Args.Get(i, arg);
-      IF arg = "-d" THEN
-        detailed := TRUE;
-        INC(i);
-      END;
-    END;
-
+    ParseOptions(i);  (* Only -d is relevant for list *)
     ArcTool.Directory(archive, detailed);
 
   ELSIF cmd = "add" THEN
@@ -93,8 +140,8 @@ BEGIN
     Args.Get(i, archive);
     INC(i);
 
-    (* Check for encryption option *)
-    encrypted := ParseEncryptionOption(i);
+    (* Parse options (-c and -e) *)
+    ParseOptions(i);
 
     (* Get file list *)
     files := NIL;
@@ -116,14 +163,7 @@ BEGIN
     END;
 
     (* Set up encryption if requested *)
-    IF encrypted THEN
-      Crypt0.Key();  (* Install encryption handlers - this sets Crypt0.Encrypt and Crypt0.Decrypt *)
-      (* Now they should be initialized, so we can copy them *)
-      ArcTool.Encrypt := Crypt0.Encrypt;
-      ArcTool.Decrypt := Crypt0.Decrypt;
-      ArcTool.SetEncryption(encryptKey);
-    END;
-
+    SetupEncryption();
     ArcTool.Add(archive, files);
 
     (* Clear encryption *)
@@ -140,8 +180,8 @@ BEGIN
     Args.Get(i, archive);
     INC(i);
 
-    (* Check for encryption option *)
-    encrypted := ParseEncryptionOption(i);
+    (* Parse options (-c and -e) *)
+    ParseOptions(i);
 
     (* Get file list *)
     files := NIL;
@@ -158,13 +198,7 @@ BEGIN
     END;
 
     (* Set up decryption if requested *)
-    IF encrypted THEN
-      Crypt0.Key();  (* Initialize Crypt0 module *)
-      (* Now pass the procedures to ArcTool *)
-      ArcTool.Encrypt := Crypt0.Encrypt;
-      ArcTool.Decrypt := Crypt0.Decrypt;
-      ArcTool.SetDecryption(encryptKey);
-    END;
+    SetupEncryption();
 
     IF files = NIL THEN
       ArcTool.ExtractAll(archive)
@@ -186,17 +220,11 @@ BEGIN
     Args.Get(i, archive);
     INC(i);
 
-    (* Check for encryption option *)
-    encrypted := ParseEncryptionOption(i);
+    (* Parse options (-c and -e) *)
+    ParseOptions(i);
 
     (* Set up decryption if requested *)
-    IF encrypted THEN
-      Crypt0.Key();  (* Initialize Crypt0 module *)
-      (* Now pass the procedures to ArcTool *)
-      ArcTool.Encrypt := Crypt0.Encrypt;
-      ArcTool.Decrypt := Crypt0.Decrypt;
-      ArcTool.SetDecryption(encryptKey);
-    END;
+    SetupEncryption();
 
     ArcTool.ExtractAll(archive);
 
