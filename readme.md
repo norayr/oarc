@@ -113,6 +113,26 @@ This will produce the executable `oarc` in the `build` directory.
 * Archives are modified in-place
 * Encrypted files are compatible with original Oberon S3 formats (where applicable)
 
+## How to create/extract encrypted archives in Oberon operating system?
+
+You have to install one of the encryption methods. In Oberon S3 there's `CompressCrypt` module.
+
+```
+Compress.Add \C CompressCrypt.Install "key" archive.Arc file0.txt file1.txt ~
+```
+
+or
+
+```
+Compress.Extract \C CompressCrypt.Install "key" archive.Arc file0.txt file1.txt ~
+```
+
+Otherwise, if you use [compress system](https://web.archive.org/web/20140314210953/http://statlab.uni-heidelberg.de/projects/oberon/util/system3/Compress.Arc) from [Voyager project](https://web.archive.org/web/20140314210953/http://statlab.uni-heidelberg.de/projects/voyager/) then its Crypt0.Mod file encryption should be used.
+
+```
+Compress.Extract \C Crypt0.Install "key" archive.Arc file0.txt file1.txt ~
+```
+
 ## License
 
 GPL-3
