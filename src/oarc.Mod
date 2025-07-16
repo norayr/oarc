@@ -31,13 +31,13 @@ BEGIN
   Out.String("Available ciphers:"); Out.Ln;
   Out.String("  mod         Parks-Miller PRNG with modular arithmetic (default)"); Out.Ln;
   Out.String("              - Uses: ciphertext = (plaintext + keystream) MOD 256"); Out.Ln;
-  Out.String("  heidelberg  Voyager project cipher (has a bug with 1-char keys!)"); Out.Ln;
+  Out.String("  heidelberg  Voyager project cipher of Crypt0.Mod (has a bug with 1-char keys!)"); Out.Ln;
   Out.String("              - Same as 'mod' but with keylen = Length(key)-1"); Out.Ln;
   Out.String("              - WARNING: Crashes with single-character passwords"); Out.Ln;
   Out.String("              - Use only for compatibility with Voyager archives"); Out.Ln;
   Out.String("  xor         XOR stream cipher"); Out.Ln;
   Out.String("              - Uses: ciphertext = plaintext XOR keystream"); Out.Ln;
-  Out.String("  s3          Simple key-based cipher from ETH Oberon System 3"); Out.Ln;
+  Out.String("  s3          Simple key-based cipher from ETH Oberon System 3 CompressCrypt.Mod"); Out.Ln;
   Out.String("              - Uses: ciphertext = plaintext +/- key[i MOD keylen]"); Out.Ln;
   Out.Ln;
   Out.String("Examples:"); Out.Ln;
